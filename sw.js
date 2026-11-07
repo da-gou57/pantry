@@ -1,6 +1,6 @@
 // 家庭庫存：離線快取
 // 更新 App 時請把版本號加一，手機才會下載新版
-const VERSION = 'v1.0.0';
+const VERSION = 'v1.1.0';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = 'runtime-v1';
 const FILES = ['./', './index.html', './manifest.json', './icon.png'];

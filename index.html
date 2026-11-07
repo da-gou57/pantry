@@ -356,6 +356,37 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 #toast span { flex: 1; }
 #toast button { white-space: nowrap; }
 
+/* ---------- v1.1.0 ---------- */
+.thumb { width: 44px; height: 44px; border-radius: 10px; flex: none; overflow: hidden; background: var(--surface-2); display: flex; align-items: center; justify-content: center; color: var(--muted); font-weight: 700; font-size: 17px; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb.lg { width: 64px; height: 64px; border-radius: 12px; }
+.thumb svg { width: 22px; height: 22px; }
+.item.empty-stock .thumb { opacity: .55; }
+.photo-strip { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0; -webkit-overflow-scrolling: touch; }
+.ph { position: relative; width: 76px; height: 76px; border-radius: 12px; border: 2px solid transparent; padding: 0; overflow: hidden; flex: none; background: var(--surface-2); }
+.ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ph.main { border-color: var(--accent); }
+.ph .badge { position: absolute; left: 4px; bottom: 4px; background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 6px; }
+.ph.empty { width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 14px; height: 64px; border: 1.5px dashed var(--line); background: transparent; }
+.ph.empty svg { width: 22px; height: 22px; }
+.hero-photo { border-radius: var(--radius); overflow: hidden; margin-bottom: 12px; background: var(--surface-2); aspect-ratio: 4 / 3; max-height: 280px; width: 100%; box-shadow: var(--shadow); }
+.hero-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ai-card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px; margin-bottom: 10px; transition: opacity .15s; }
+.ai-card.off { opacity: .55; }
+.ai-card .check { margin-top: 18px; }
+.cam .ghost-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: .35; pointer-events: none; z-index: 1; }
+.cam .sliders { display: flex; gap: 14px; justify-content: center; margin-top: 10px; font-size: 13px; }
+.cam .sliders label { display: flex; align-items: center; gap: 6px; }
+.cam .sliders input { width: 120px; accent-color: #6fe3a8; }
+.cam .rawtext { margin-top: 8px; font-size: 12px; text-align: center; opacity: .85; word-break: break-all; background: rgba(0,0,0,.4); border-radius: 8px; padding: 6px 8px; }
+.cam .frame.date { transition: width .1s, height .1s; }
+.spin { width: 22px; height: 22px; border-radius: 50%; border: 3px solid var(--accent-soft); border-top-color: var(--accent); animation: spin 1s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+ul.cl { margin: 0; padding-left: 20px; }
+ul.cl li { margin: 4px 0; }
+.item.done-row { background: color-mix(in srgb, var(--accent-soft) 45%, transparent); }
+.item .btn.sm { flex: none; }
+
 </style>
 </head>
 <body>
@@ -510,7 +541,7 @@ const DateParse = (() => {
    家庭庫存 — 單機離線版
    資料只存在這支手機的瀏覽器（IndexedDB）
    ========================================================= */
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 /* ---------- icons ---------- */
 const ICONS = {
@@ -619,6 +650,10 @@ function defaultState() {
       backupDays: 14,
       lastBackupAt: null,
       onboarded: false,
+      stocktakeDays: 30,
+      stocktakeStart: Date.now(),
+      lastStocktakeAt: null,
+      seenVersion: null,
     },
     plans: [
       { id: 'p_short', name: '短效', lead: 2, unit: 'day' },
@@ -653,8 +688,7 @@ function defaultState() {
 let S = null; // app state
 let saving = Promise.resolve();
 function save() {
-  const snapshot = JSON.parse(JSON.stringify(S));
-  saving = saving.then(() => IDB.set('state', snapshot)).catch(err => { console.error(err); toast('儲存失敗，請確認手機空間'); });
+  saving = saving.then(() => IDB.set('state', S)).catch(err => { console.error(err); toast('儲存失敗，請確認手機空間'); });
   return saving;
 }
 
@@ -745,7 +779,9 @@ function alertsFor(p) {
     const e = expiryStatus(p);
     if (e && e.level !== 'ok') out.push({ type: e.level, e });
   }
-  const low = eff(p, 'low') && stock < lowThreshold(p);
+  // 從來沒有入庫過的新商品不算庫存不足，避免剛建檔時首頁被洗版
+  const everStocked = stock > 0 || S.logs.some(l => l.productId === p.id && l.type === 'in');
+  const low = everStocked && eff(p, 'low') && stock < lowThreshold(p);
   if (low) out.push({ type: 'low' });
   if (!low && eff(p, 'forecast') && stock > 0) {
     const st = stats(p);
@@ -931,6 +967,7 @@ function itemRow(p, { meta = '', minus = true } = {}) {
   const low = stock > 0 && eff(p, 'low') && stock < lowThreshold(p) ? `<span class="chip info">庫存不足</span>` : '';
   const sub = p.packs?.length && stock > 0 && fmtQty(p, stock) !== `${stock} ${p.baseUnit}` ? `<small>共 ${stock} ${esc(p.baseUnit)}</small>` : '';
   return `<div class="item tap ${stock <= 0 ? 'empty-stock' : ''}" data-open="${p.id}">
+    ${thumbHTML(p)}
     <div class="main">
       <div class="name">${esc(p.name)}</div>
       <div class="meta">${meta}${chip}${low}</div>
@@ -979,6 +1016,10 @@ function renderHome(v) {
     const last = S.settings.lastBackupAt;
     h += `<div class="banner">${ic('backup')}<div class="grow"><b>該備份了</b><div class="small muted">${last ? `上次備份是 ${Math.floor((Date.now() - last) / 86400000)} 天前` : '你還沒有備份過資料'}，資料只存在這支手機裡。</div></div><button class="btn sm primary" data-backup>備份</button></div>`;
   }
+  const dueAreas = stocktakeDueAreas();
+  if (dueAreas.length) {
+    h += `<div class="banner info">${ic('clock')}<div class="grow"><b>該盤點了</b><div class="small muted">${esc(dueAreas.map(a => a.name).join('、'))} 超過 ${S.settings.stocktakeDays} 天沒盤點</div></div><button class="btn sm primary" data-stock>盤點</button></div>`;
+  }
   h += `<div class="big-actions">
       <button class="btn primary" data-scan="in">${ic('in')}掃碼入庫</button>
       <button class="btn out" data-scan="out">${ic('out')}掃碼出庫</button>
@@ -1002,12 +1043,13 @@ function renderHome(v) {
   bindItemRows(v);
   $$('[data-scan]', v).forEach(b => b.onclick = () => openScanner({ mode: b.dataset.scan }));
   const bb = $('[data-backup]', v); if (bb) bb.onclick = () => openBackup();
+  const sb = $('[data-stock]', v); if (sb) sb.onclick = () => openStocktake();
 }
 
 /* ---------- inventory ---------- */
 function renderInv(v) {
   setTop('庫存', '', `<button class="icon-btn" data-new aria-label="新增商品">${ic('plus')}</button>`);
-  $('#top [data-new]').onclick = () => openProductForm({ onSaved: p => openProduct(p.id) });
+  $('#top [data-new]').onclick = () => openAddChooser();
   v.innerHTML = `<div class="seg" style="margin-top:2px"><button data-mode="cat" class="${invMode === 'cat' ? 'on' : ''}">依分類</button><button data-mode="area" class="${invMode === 'area' ? 'on' : ''}">依區域</button></div>
     <label class="search">${ic('search')}<input type="search" placeholder="搜尋商品名稱或條碼" value="${esc(invQuery)}" data-q></label>
     <div data-res></div>`;
@@ -1142,7 +1184,10 @@ function openProduct(id) {
     const logs = S.logs.filter(l => l.productId === p.id).sort((a, b) => b.at - a.at).slice(0, 15);
     const alerts = alertsFor(p);
     const t = todayISO();
-    let h = `<div class="card">
+    const phs = p.photos || [];
+    const mainPh = phs.find(x => x.id === p.mainPhoto) || phs[0];
+    let h = (mainPh ? `<div class="hero-photo" data-hero><img alt="" src="${mainPh.thumb}" data-hero-img></div>
+      ${phs.length > 1 ? `<div class="photo-strip" style="margin:-4px 0 12px">${phs.map(x => `<button class="ph ${x.id === mainPh.id ? 'main' : ''}" data-phv="${x.id}"><img alt="" src="${x.thumb}"></button>`).join('')}</div>` : ''}` : '') + `<div class="card">
       <div class="row"><div class="grow"><div class="hero-qty">${stock <= 0 ? '0' : esc(fmtQty(p, stock))}</div>
         <div class="small muted">${stock > 0 && p.packs?.length ? `共 ${stock} ${esc(p.baseUnit)}・` : ''}${esc(c?.name || '未分類')}・${esc(spotLabel(p.spotId))}</div></div></div>
       <div class="chips" style="margin-top:10px">${alerts.map(a => a.type === 'expired' ? `<span class="chip danger">有批次已過期</span>` : a.type === 'soon' ? `<span class="chip warn">${relDays(a.e.days)}</span>` : a.type === 'low' ? `<span class="chip info">庫存不足</span>` : `<span class="chip info">約 ${Math.round(a.st.daysLeft)} 天後用完</span>`).join('')}</div>
@@ -1181,6 +1226,11 @@ function openProduct(id) {
     </div>
     <button class="btn danger block" data-delete>${ic('trash')}刪除商品</button>`;
     ctx.setBody(h);
+    if (mainPh) {
+      Photos.get(mainPh.id).then(d => { const im = ctx.$('[data-hero-img]'); if (d && im) im.src = d; });
+      ctx.$('[data-hero]').onclick = () => openPhotoViewer(mainPh);
+    }
+    ctx.$$('[data-phv]').forEach(b => b.onclick = () => openPhotoViewer(phs.find(x => x.id === b.dataset.phv)));
     ctx.$('[data-in]').onclick = () => openStockIn(p.id);
     const ob = ctx.$('[data-out]'); if (ob) ob.onclick = () => openStockOut(p.id);
     ctx.$('[data-edit]').onclick = () => openProductForm({ product: p });
@@ -1193,6 +1243,7 @@ function openProduct(id) {
       S.batches = S.batches.filter(b => b.productId !== p.id);
       S.logs = S.logs.filter(l => l.productId !== p.id);
       S.shopping = S.shopping.filter(s => s.productId !== p.id);
+      for (const ph of p.photos || []) await Photos.del(ph.id);
       commit(); await closeTop(); toast('已刪除商品');
     };
   };
@@ -1246,14 +1297,17 @@ function triHTML(key, val, inheritText) {
 
 const UNIT_SUGGEST = ['個', '包', '瓶', '罐', '盒', '捲', '條', '片', '顆', '袋', '支', '組', '箱', '公斤'];
 
-function openProductForm({ product, barcode, onSaved } = {}) {
+function openProductForm({ product, barcode, onSaved, prefill = {} } = {}) {
   const isNew = !product;
   const p = product ? JSON.parse(JSON.stringify(product)) : {
     id: uid(), name: '', barcodes: barcode ? [barcode] : [], categoryId: S.categories[0]?.id || null, spotId: '',
     baseUnit: '個', packs: [], inUnit: null, outUnit: null, low: null, lowUnit: null, planId: null, alerts: {}, createdAt: Date.now(),
+    photos: [], mainPhoto: null,
   };
+  if (prefill.name && !p.name) p.name = prefill.name;
   p.alerts = p.alerts || {};
   let draft = p;
+  const photoDraft = createPhotoDraft(p, prefill.photos || []);
 
   const render = ctx => {
     const c = catById(draft.categoryId);
@@ -1262,6 +1316,7 @@ function openProductForm({ product, barcode, onSaved } = {}) {
     const lowVal = draft.low != null ? round(draft.low / factorOf(draft, lowU)) : '';
     const catPlan = planById(c?.planId) || planById(S.settings.defaultPlanId);
     ctx.setBody(`
+      ${photoDraft.html()}
       <div class="field"><label>商品名稱</label><input class="input" data-f="name" value="${esc(draft.name)}" placeholder="例如：舒潔衛生紙 110 抽"></div>
       <div class="field"><label>分類</label><select class="input" data-f="categoryId">${catOptions(draft.categoryId)}</select></div>
       <div class="field"><label>放置位置</label><select class="input" data-f="spotId">${spotOptions(draft.spotId)}</select></div>
@@ -1312,6 +1367,11 @@ function openProductForm({ product, barcode, onSaved } = {}) {
       draft.lowUnit = lu;
       draft.low = lowRaw === '' ? null : round(+lowRaw * factorOf(draft, lu));
     };
+    photoDraft.bind(ctx, {
+      getName: () => ctx.$('[data-f="name"]').value,
+      getCodes: () => draft.barcodes || [],
+      setName: n => { ctx.$('[data-f="name"]').value = n; draft.name = n; },
+    });
     ctx.$$('[data-tri] button').forEach(b => b.onclick = () => {
       const key = b.parentElement.dataset.tri;
       draft.alerts[key] = b.dataset.v === 'inherit' ? null : b.dataset.v === 'on';
@@ -1358,6 +1418,7 @@ function openProductForm({ product, barcode, onSaved } = {}) {
       if (!names.includes(draft.outUnit)) draft.outUnit = draft.baseUnit;
       if (!names.includes(draft.lowUnit)) draft.lowUnit = draft.baseUnit;
       for (const k of ['exp', 'low', 'forecast']) if (draft.alerts[k] === undefined) draft.alerts[k] = null;
+      await photoDraft.commit(draft);
       if (isNew) S.products.push(draft);
       else { const i = S.products.findIndex(x => x.id === draft.id); S.products[i] = draft; }
       commit();
@@ -1640,174 +1701,6 @@ function openScanner({ mode = 'in', capture = null } = {}) {
   })();
 }
 
-function handleCode(code, mode) {
-  const p = prodByBarcode(code);
-  if (p) return mode === 'in' ? openStockIn(p.id, { fromScan: true }) : openStockOut(p.id, { fromScan: true });
-  sheet({
-    title: '新的條碼',
-    body: `<div class="card"><div class="row">${ic('barcode')}<b style="font-variant-numeric:tabular-nums;font-size:18px">${esc(code)}</b></div></div>
-      <p class="muted small" style="margin:0 2px 12px">這個條碼還沒登記過。第一次需要建立商品資料，之後再掃就會自動認得。</p>
-      <button class="btn primary block" data-new>${ic('plus')}建立新商品</button>
-      <div class="spacer"></div>
-      <button class="btn block" data-link>${ic('tag')}加到已有的商品</button>
-      <div class="hint" style="margin-top:6px">例如同一款衛生紙的單包和整袋條碼不同，可以都加到同一個商品。</div>`,
-    onMount: ctx => {
-      ctx.$('[data-new]').onclick = async () => {
-        await closeTop();
-        openProductForm({ barcode: code, onSaved: np => (mode === 'in' ? openStockIn : openStockOut)(np.id, { fromScan: true }) });
-      };
-      ctx.$('[data-link]').onclick = async () => {
-        await closeTop();
-        pickProduct(tp => {
-          tp.barcodes = [...(tp.barcodes || []), code];
-          commit(); toast(`已把條碼加到「${tp.name}」`);
-          (mode === 'in' ? openStockIn : openStockOut)(tp.id, { fromScan: true });
-        });
-      };
-    },
-  });
-}
-
-function pickProduct(onPick) {
-  let q = '';
-  const render = ctx => {
-    const list = S.products.filter(p => !q || p.name.toLowerCase().includes(q.toLowerCase())).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
-    ctx.$('[data-list]').innerHTML = list.length ? `<div class="list">${list.map(p => `<div class="item tap" data-pick="${p.id}"><div class="main"><div class="name">${esc(p.name)}</div><div class="meta">${esc(catById(p.categoryId)?.name || '')}</div></div><div class="qty">${esc(fmtQty(p, stockOf(p)))}</div></div>`).join('')}</div>` : `<div class="empty small">${S.products.length ? '找不到符合的商品' : '還沒有任何商品'}</div>`;
-    ctx.$$('[data-pick]').forEach(el => el.onclick = async () => { const p = prodById(el.dataset.pick); await closeTop(); onPick(p); });
-  };
-  sheet({
-    title: '選擇商品', full: true,
-    body: `<label class="search" style="margin-top:0">${ic('search')}<input type="search" placeholder="搜尋商品" data-s></label><div data-list></div>`,
-    onMount: ctx => { render(ctx); const s = ctx.$('[data-s]'); s.oninput = () => { q = s.value; render(ctx); }; },
-  });
-}
-
-/* =========================================================
-   Camera: expiry date OCR (on device, photo never stored)
-   ========================================================= */
-const TESS_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
-let tessWorker = null;
-async function getTess(onStatus) {
-  if (tessWorker) return tessWorker;
-  onStatus('第一次使用，正在下載辨識資料…');
-  await loadScript(TESS_SRC);
-  tessWorker = await Tesseract.createWorker('eng', 1, {
-    logger: m => { if (m.status && m.progress != null && /load|initializ/i.test(m.status)) onStatus(`準備辨識中 ${Math.round(m.progress * 100)}%`); },
-  });
-  await tessWorker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
-  return tessWorker;
-}
-
-function preprocess(src, variant) {
-  const w = src.width, h = src.height;
-  const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const g = c.getContext('2d', { willReadFrequently: true });
-  g.drawImage(src, 0, 0);
-  const img = g.getImageData(0, 0, w, h); const d = img.data;
-  const gray = new Float32Array(w * h);
-  for (let i = 0, j = 0; i < d.length; i += 4, j++) gray[j] = d[i] * .299 + d[i + 1] * .587 + d[i + 2] * .114;
-  let a = gray;
-  if (variant === 'dots') { // 模糊讓點陣字的點連起來
-    const r = Math.max(1, Math.round(w / 450));
-    const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
-    for (let y = 0; y < h; y++) { let s = 0; for (let x = -r; x <= r; x++) s += gray[y * w + Math.min(w - 1, Math.max(0, x))]; for (let x = 0; x < w; x++) { tmp[y * w + x] = s / (2 * r + 1); s += gray[y * w + Math.min(w - 1, x + r + 1)] - gray[y * w + Math.max(0, x - r)]; } }
-    for (let x = 0; x < w; x++) { let s = 0; for (let y = -r; y <= r; y++) s += tmp[Math.min(h - 1, Math.max(0, y)) * w + x]; for (let y = 0; y < h; y++) { out[y * w + x] = s / (2 * r + 1); s += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x]; } }
-    a = out;
-  }
-  // Otsu 二值化
-  const hist = new Array(256).fill(0);
-  for (const v of a) hist[Math.max(0, Math.min(255, v | 0))]++;
-  let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
-  let sumB = 0, wB = 0, best = 0, th = 127; const total = a.length;
-  for (let i = 0; i < 256; i++) { wB += hist[i]; if (!wB) continue; const wF = total - wB; if (!wF) break; sumB += i * hist[i]; const mB = sumB / wB, mF = (sum - sumB) / wF; const between = wB * wF * (mB - mF) ** 2; if (between > best) { best = between; th = i; } }
-  let dark = 0; for (const v of a) if (v < th) dark++;
-  const invert = dark > total * .55; // 淺色字深色底時反轉
-  for (let j = 0, i = 0; j < a.length; j++, i += 4) { let v = a[j] < th ? 0 : 255; if (invert) v = 255 - v; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
-  g.putImageData(img, 0, 0);
-  return c;
-}
-
-function openDateOCR(onPick) {
-  const el = document.createElement('div');
-  el.className = 'overlay';
-  el.innerHTML = `<div class="cam">
-      <video muted playsinline></video>
-      <div class="frame date"></div>
-      <div class="cam-top">
-        <button class="icon-btn" data-close aria-label="關閉">${ic('x')}</button>
-        <div class="grow"><b>拍到期日</b><div class="small" style="opacity:.8">照片只用來辨識，不會儲存</div></div>
-        <button class="icon-btn" data-torch aria-label="手電筒" hidden>${ic('flash')}</button>
-      </div>
-      <div class="cam-bottom">
-        <div class="cam-msg" data-msg>把日期放進框內，盡量拿穩、避開反光</div>
-        <div class="cands" data-cands style="margin-top:10px"></div>
-        <button class="shutter" data-shot aria-label="拍照辨識"></button>
-      </div>
-    </div>`;
-  const video = $('video', el), msg = $('[data-msg]', el), cands = $('[data-cands]', el), shot = $('[data-shot]', el);
-  let running = true, busy = false;
-  const work = [];
-  const cleanup = () => { running = false; Cam.stop(video); work.forEach(c => { c.width = c.height = 0; }); work.length = 0; };
-  pushOverlay(el, { onClose: cleanup });
-  $('[data-close]', el).onclick = () => closeTop();
-  let torchOn = false;
-  $('[data-torch]', el).onclick = async e => { torchOn = !torchOn; await Cam.torch(torchOn); e.currentTarget.classList.toggle('on', torchOn); };
-
-  (async () => {
-    try { await Cam.start(video); if (!running) return Cam.stop(video); if (Cam.canTorch()) $('[data-torch]', el).hidden = false; }
-    catch (e) { msg.textContent = e.name === 'NotAllowedError' ? '沒有相機權限，請在 Chrome 設定中允許。' : '無法開啟相機。'; shot.hidden = true; }
-  })();
-
-  shot.onclick = async () => {
-    if (busy || !video.videoWidth) return;
-    busy = true; shot.style.opacity = .4; cands.innerHTML = '';
-    try {
-      // 依畫面上框的位置裁切
-      const fr = $('.frame', el).getBoundingClientRect(), vr = video.getBoundingClientRect();
-      const vw = video.videoWidth, vh = video.videoHeight;
-      const scale = Math.max(vr.width / vw, vr.height / vh); // object-fit: cover
-      const ox = (vr.width - vw * scale) / 2, oy = (vr.height - vh * scale) / 2;
-      let sx = (fr.left - vr.left - ox) / scale, sy = (fr.top - vr.top - oy) / scale, sw = fr.width / scale, sh = fr.height / scale;
-      const padX = sw * .06, padY = sh * .15;
-      sx = Math.max(0, sx - padX); sy = Math.max(0, sy - padY); sw = Math.min(vw - sx, sw + padX * 2); sh = Math.min(vh - sy, sh + padY * 2);
-      const outW = Math.min(1600, Math.max(900, sw));
-      const k = outW / sw;
-      const crop = document.createElement('canvas'); work.push(crop);
-      crop.width = Math.round(sw * k); crop.height = Math.round(sh * k);
-      crop.getContext('2d').drawImage(video, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
-      const w = await getTess(s => { msg.textContent = s; });
-      if (!running) return;
-      msg.textContent = '辨識中…';
-      const v1 = preprocess(crop, 'plain'); work.push(v1);
-      const r1 = await w.recognize(v1);
-      let text = r1.data.text;
-      let dates = DateParse.parse(text);
-      if (!running) return;
-      if (dates.length < 1) {
-        const v2 = preprocess(crop, 'dots'); work.push(v2);
-        const r2 = await w.recognize(v2);
-        text += '\n' + r2.data.text;
-        dates = DateParse.parse(text);
-      }
-      // 用完立即清掉影像
-      work.forEach(c => { c.width = c.height = 0; }); work.length = 0;
-      if (!running) return;
-      if (dates.length) {
-        msg.textContent = '找到以下日期，點選正確的那一個';
-        cands.innerHTML = dates.map(d => `<button data-d="${d}">${fmtDate(d)}</button>`).join('');
-        $$('[data-d]', cands).forEach(b => b.onclick = async () => { const d = b.dataset.d; await closeTop(); onPick(d); toast(`已填入 ${fmtDate(d)}，請確認是否正確`); });
-      } else {
-        msg.textContent = '沒有辨識出日期，再拍一次，或關閉後手動輸入';
-      }
-    } catch (e) {
-      console.error(e);
-      msg.textContent = navigator.onLine ? '辨識失敗，請再試一次' : '第一次使用需要連網下載辨識資料';
-    } finally {
-      busy = false; shot.style.opacity = 1;
-    }
-  };
-}
-
 /* =========================================================
    Settings
    ========================================================= */
@@ -1821,10 +1714,15 @@ function renderSettings(v) {
       ${row('tag', '分類', `${S.categories.length} 個`, 'data-go="cats"')}
       ${row('pin', '區域與位置', `${S.areas.length} 區`, 'data-go="areas"')}
     </div>
-    <div class="section-title"><span>提醒</span></div>
+    <div class="section-title"><span>提醒與盤點</span></div>
     <div class="list">
+      ${row('clock', '盤點', stocktakeDueAreas().length ? '該盤點了' : '', 'data-go="stock"')}
       ${row('bell', '到期提醒方案', `${S.plans.length} 種`, 'data-go="plans"')}
       ${row('sliders', '預設值', '', 'data-go="defaults"')}
+    </div>
+    <div class="section-title"><span>AI 辨識</span></div>
+    <div class="list">
+      ${row('sparkle', 'Gemini 金鑰與設定', AI.key ? (AI.model ? '已啟用' : '尚未測試') : '未設定', 'data-go="ai"')}
     </div>
     <div class="section-title"><span>資料</span></div>
     <div class="list">
@@ -1834,12 +1732,14 @@ function renderSettings(v) {
     <div class="section-title"><span>其他</span></div>
     <div class="list">
       ${row('help', '使用說明', '', 'data-go="help"')}
+      ${row('sparkle', '更新內容', `v${APP_VERSION}`, 'data-go="log"')}
       ${row('trash', '清除所有資料', '', 'data-go="wipe"')}
     </div>
     <div class="small muted" style="text-align:center;margin:18px 0 6px">家庭庫存 v${APP_VERSION}・資料只存在這支手機</div>`;
   const go = {
     cats: openCategories, areas: openAreas, plans: openPlans, defaults: openDefaults,
     backup: openBackup, storage: openStorage, help: () => openOnboarding(true), wipe: wipeAll,
+    stock: openStocktake, ai: openAISettings, log: () => openChangelog(false),
   };
   $$('[data-go]', v).forEach(b => b.onclick = () => go[b.dataset.go]());
 }
@@ -2037,13 +1937,15 @@ function openDefaults() {
     body: `<div class="field"><label>預設到期提醒方案</label><select class="input" data-plan>${planOptions(st.defaultPlanId)}</select><div class="hint">分類沒有指定方案時使用。</div></div>
       <div class="field"><label>預設低庫存門檻</label><input class="input" type="number" inputmode="decimal" step="any" min="0" data-low value="${st.defaultLow}"><div class="hint">商品沒有另外設定時，庫存少於這個數量（以基本單位計）就提醒。</div></div>
       <div class="field"><label>快用完提醒：預計幾天內用完</label><input class="input" type="number" inputmode="numeric" min="1" step="1" data-fc value="${st.forecastDays}"></div>
+      <div class="field"><label>盤點提醒間隔（天）</label><input class="input" type="number" inputmode="numeric" min="0" step="1" data-st value="${st.stocktakeDays}"><div class="hint">填 0 表示不提醒盤點。</div></div>
       <div class="field"><label>備份提醒間隔（天）</label><input class="input" type="number" inputmode="numeric" min="1" step="1" data-bk value="${st.backupDays}"><div class="hint">超過這麼多天沒備份，首頁就會提醒。</div></div>`,
     foot: `<button class="btn primary block" data-ok>儲存</button>`,
     onMount: ctx => {
       ctx.$('[data-ok]').onclick = () => {
         const low = +ctx.$('[data-low]').value, fc = Math.round(+ctx.$('[data-fc]').value), bk = Math.round(+ctx.$('[data-bk]').value);
-        if (!(low >= 0) || !(fc >= 1) || !(bk >= 1)) return toast('數值不正確');
-        Object.assign(st, { defaultPlanId: ctx.$('[data-plan]').value, defaultLow: low, forecastDays: fc, backupDays: bk });
+        const stk = Math.round(+ctx.$('[data-st]').value);
+        if (!(low >= 0) || !(fc >= 1) || !(bk >= 1) || !(stk >= 0)) return toast('數值不正確');
+        Object.assign(st, { defaultPlanId: ctx.$('[data-plan]').value, defaultLow: low, forecastDays: fc, backupDays: bk, stocktakeDays: stk });
         commit(); closeTop(); toast('已儲存');
       };
     },
@@ -2081,7 +1983,8 @@ async function wipeAll() {
   if (!await confirmDialog('確定要清除<b>所有</b>商品、紀錄和設定嗎？這個動作無法復原，建議先備份。', { ok: '下一步', danger: true })) return;
   const v = await promptDialog('最後確認', { label: '請輸入「清除」兩個字', ok: '清除所有資料' });
   if ((v || '').trim() !== '清除') return toast('已取消');
-  S = defaultState(); S.settings.onboarded = true; commit(); toast('已清除所有資料');
+  await Photos.clear();
+  S = defaultState(); S.settings.onboarded = true; S.settings.seenVersion = APP_VERSION; commit(); toast('已清除所有資料');
 }
 
 /* =========================================================
@@ -2092,26 +1995,6 @@ async function deriveKey(pw, salt) {
   const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
-async function buildBackup(pw) {
-  const payload = JSON.stringify(S);
-  const head = { app: 'home-pantry', format: 1, version: APP_VERSION, exportedAt: new Date().toISOString() };
-  if (!pw) return JSON.stringify({ ...head, encrypted: false, data: JSON.parse(payload) });
-  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveKey(pw, salt);
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(payload)));
-  return JSON.stringify({ ...head, encrypted: true, salt: b64.enc(salt), iv: b64.enc(iv), data: b64.enc(ct) });
-}
-async function readBackup(text, askPw) {
-  let obj; try { obj = JSON.parse(text); } catch (e) { throw new Error('這不是有效的備份檔'); }
-  if (obj.app !== 'home-pantry') throw new Error('這不是家庭庫存的備份檔');
-  if (!obj.encrypted) return obj.data;
-  const pw = await askPw(); if (pw == null) throw new Error('cancel');
-  try {
-    const key = await deriveKey(pw, b64.dec(obj.salt));
-    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64.dec(obj.iv) }, key, b64.dec(obj.data));
-    return JSON.parse(new TextDecoder().decode(pt));
-  } catch (e) { throw new Error('密碼錯誤，無法解開備份'); }
-}
 function validState(d) { return d && Array.isArray(d.products) && Array.isArray(d.batches) && Array.isArray(d.categories) && Array.isArray(d.areas) && d.settings; }
 
 function openBackup() {
@@ -2121,6 +2004,7 @@ function openBackup() {
       <div class="card"><div class="row">${ic('backup')}<div class="grow"><b>${last ? `上次備份：${fmtDate(toISO(new Date(last)))}` : '還沒有備份過'}</b>
         <div class="small muted">每 ${S.settings.backupDays} 天提醒一次，可在「預設值」調整</div></div></div></div>
       <div class="switch-row" style="padding:6px 2px 12px;border:0"><div class="grow"><div>${ic('lock').replace('<svg', '<svg style="width:16px;height:16px;vertical-align:-2px"')} 用密碼加密備份</div><div class="small muted">忘記密碼就無法還原，請記好</div></div><label class="switch"><input type="checkbox" data-enc><span></span></label></div>
+      <div class="hint" style="margin:0 2px 10px">備份包含所有商品資料和照片，不包含 AI 金鑰。</div>
       <button class="btn primary block" data-share>${ic('backup')}備份並分享到雲端硬碟…</button>
       <div class="hint" style="margin:6px 2px 10px">會跳出分享選單，選「雲端硬碟」即可存起來，也可以選 Email 或其他 App。</div>
       <button class="btn block" data-dl>${ic('in')}下載備份檔到手機</button>
@@ -2156,10 +2040,15 @@ function openBackup() {
     fi.onchange = async () => {
       const f = fi.files[0]; if (!f) return;
       try {
-        const data = await readBackup(await f.text(), () => promptDialog('輸入備份密碼', { type: 'password' }));
+        const bk = await readBackup(await f.text(), () => promptDialog('輸入備份密碼', { type: 'password' }));
+        const data = bk.state;
         if (!validState(data)) throw new Error('備份檔內容不完整');
-        if (!await confirmDialog(`備份裡有 ${data.products.length} 項商品。確定要用它取代目前的資料（${S.products.length} 項商品）嗎？`, { ok: '還原', danger: true })) return;
-        S = migrate(data); S.settings.onboarded = true; commit();
+        const nPh = Object.keys(bk.photos).length;
+        if (!await confirmDialog(`${bk.newer ? `<b>這個備份來自較新的版本 v${esc(bk.version)}</b>，目前是 v${APP_VERSION}，部分資料可能無法顯示，建議先更新 App。<br><br>` : ''}備份裡有 ${data.products.length} 項商品${nPh ? `、${nPh} 張照片` : ''}。確定要用它取代目前的資料（${S.products.length} 項商品）嗎？`, { ok: '還原', danger: true })) return;
+        await Photos.clear();
+        for (const [id, d] of Object.entries(bk.photos)) await Photos.put(id, d);
+        const keepSeen = S.settings.seenVersion;
+        S = migrate(data); S.settings.onboarded = true; S.settings.seenVersion = keepSeen || APP_VERSION; commit();
         await closeAll(); toast('還原完成');
       } catch (e) { if (e.message !== 'cancel') toast(e.message); }
     };
@@ -2192,7 +2081,7 @@ function openOnboarding(fromSettings = false) {
     const pv = ctx.$('[data-prev]'); if (pv) pv.onclick = () => { i--; render(ctx); };
     ctx.$('[data-next]').onclick = async () => {
       if (i < pages.length - 1) { i++; render(ctx); return; }
-      S.settings.onboarded = true; commit();
+      S.settings.onboarded = true; S.settings.seenVersion = APP_VERSION; commit();
       await closeTop();
       if (!fromSettings) requestPersist();
     };
@@ -2208,12 +2097,15 @@ function migrate(d) {
   d.settings = { ...base.settings, ...(d.settings || {}) };
   for (const k of ['plans', 'categories', 'areas', 'products', 'batches', 'logs', 'shopping']) if (!Array.isArray(d[k])) d[k] = base[k];
   if (!d.plans.length) d.plans = base.plans;
-  d.products.forEach(p => { p.barcodes = p.barcodes || []; p.packs = p.packs || []; p.alerts = p.alerts || {}; p.baseUnit = p.baseUnit || '個'; });
-  d.schema = 1;
+  d.products.forEach(p => { p.barcodes = p.barcodes || []; p.packs = p.packs || []; p.alerts = p.alerts || {}; p.baseUnit = p.baseUnit || '個'; p.photos = p.photos || []; });
+  if (d.settings.stocktakeStart == null) d.settings.stocktakeStart = Date.now();
+  if (d.settings.seenVersion == null && d.settings.onboarded) d.settings.seenVersion = '1.0.0';
+  d.schema = 2;
   return d;
 }
 
 async function boot() {
+  await loadAI();
   try {
     const saved = await IDB.get('state');
     S = saved ? migrate(saved) : defaultState();
@@ -2228,6 +2120,7 @@ async function boot() {
   $('.tabbar [data-scanbtn]').onclick = () => openScanner({ mode: 'in' });
   renderMain();
   if (!S.settings.onboarded) openOnboarding();
+  else if (S.settings.seenVersion !== APP_VERSION) openChangelog(true);
   // 日期跨日時更新提醒
   document.addEventListener('visibilitychange', () => { if (!document.hidden) renderMain(); });
 
@@ -2243,6 +2136,1028 @@ async function boot() {
     } catch (e) { console.warn('sw', e); }
   }
 }
+
+/* =========================================================
+   v1.1.0 additions
+   ========================================================= */
+const CHANGELOG = [
+  {
+    v: '1.1.0', date: '2026-11-08', items: [
+      '商品照片：新增商品時就能拍照、從相簿選擇或上網找圖，可放多張並指定主圖，庫存清單顯示縮圖。',
+      '條碼查詢：掃到新條碼會先到 Open Food Facts 查詢，查得到就帶入名稱和照片。',
+      'AI 拍照建檔：拍正面和條碼面兩張照片，一次建立多項商品，自動裁切照片並綁定條碼（需在設定填入 Gemini 金鑰）。',
+      '到期日辨識改善：較高解析度拍照、可調整框的大小、顯示辨識到的文字；有金鑰時可改用 AI 辨識。',
+      '盤點：每 30 天提醒一次，可依區域逐項確認或修正數量。',
+      '掃到不認識的條碼時，優先列出最近建立、還沒有條碼的商品。',
+      '備份檔包含商品照片。',
+    ],
+  },
+  { v: '1.0.0', date: '2026-11-07', items: ['第一版：掃碼入出庫、批次到期日、分類與區域、提醒方案、消耗統計、購物清單、備份還原。'] },
+];
+
+/* ---------- photo storage (full images live outside the main state) ---------- */
+IDB.del = async function (k) {
+  const db = await this.open();
+  return new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').delete(k); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+};
+IDB.keys = async function () {
+  const db = await this.open();
+  return new Promise((res, rej) => { const t = db.transaction('kv').objectStore('kv').getAllKeys(); t.onsuccess = () => res(t.result); t.onerror = () => rej(t.error); });
+};
+const Photos = {
+  cache: new Map(),
+  async get(id) {
+    if (!id) return null;
+    if (this.cache.has(id)) return this.cache.get(id);
+    const v = await IDB.get('photo:' + id).catch(() => null);
+    if (v) this.cache.set(id, v);
+    return v || null;
+  },
+  async put(id, data) { await IDB.set('photo:' + id, data); this.cache.set(id, data); },
+  async del(id) { await IDB.del('photo:' + id).catch(() => {}); this.cache.delete(id); },
+  async all() {
+    const out = {};
+    for (const k of await IDB.keys()) if (String(k).startsWith('photo:')) out[k.slice(6)] = await IDB.get(k);
+    return out;
+  },
+  async clear() { for (const k of await IDB.keys()) if (String(k).startsWith('photo:')) await IDB.del(k); this.cache.clear(); },
+};
+
+/* ---------- image helpers ---------- */
+function toCanvas(src, sx = 0, sy = 0, sw, sh, maxSide = 4096) {
+  const W = src.videoWidth || src.naturalWidth || src.width, H = src.videoHeight || src.naturalHeight || src.height;
+  sw = sw ?? W; sh = sh ?? H;
+  const k = Math.min(1, maxSide / Math.max(sw, sh));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(sw * k)); c.height = Math.max(1, Math.round(sh * k));
+  const g = c.getContext('2d');
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+function thumbOf(canvas, size = 160) {
+  const s = Math.min(canvas.width, canvas.height);
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d'); g.imageSmoothingQuality = 'high';
+  g.drawImage(canvas, (canvas.width - s) / 2, (canvas.height - s) / 2, s, s, 0, 0, size, size);
+  const d = c.toDataURL('image/jpeg', .72); c.width = c.height = 0;
+  return d;
+}
+function makePhoto(canvas) {
+  const full = toCanvas(canvas, 0, 0, undefined, undefined, 900);
+  const p = { id: uid(), thumb: thumbOf(canvas), full: full.toDataURL('image/jpeg', .8) };
+  full.width = full.height = 0;
+  return p;
+}
+async function fileToCanvas(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => createImageBitmap(file));
+  const c = toCanvas(bmp, 0, 0, bmp.width, bmp.height, 2000);
+  bmp.close?.();
+  return c;
+}
+function pickImageFile() {
+  return new Promise(res => {
+    const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/*';
+    i.onchange = () => res(i.files[0] || null);
+    i.click();
+  });
+}
+function grabFrame(video) { return toCanvas(video, 0, 0, video.videoWidth, video.videoHeight, 4096); }
+async function hiResSnapshot(video) {
+  // 優先使用相機的正式拍照（解析度較高），比例與預覽相同時才採用，以便對應框的位置
+  const vw = video.videoWidth, vh = video.videoHeight;
+  try {
+    const track = Cam.stream?.getVideoTracks()[0];
+    if (track && 'ImageCapture' in window) {
+      const blob = await Promise.race([new ImageCapture(track).takePhoto(), new Promise((_, r) => setTimeout(() => r(new Error('t')), 4000))]);
+      const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+      if (Math.abs(bmp.width / bmp.height - vw / vh) < .03 && bmp.width > vw) return { src: bmp, scale: bmp.width / vw };
+      bmp.close?.();
+    }
+  } catch (e) { /* fall back */ }
+  return { src: video, scale: 1 };
+}
+// 依畫面上框的位置，換算成影片像素座標
+function frameRectInVideo(video, frameEl) {
+  const fr = frameEl.getBoundingClientRect(), vr = video.getBoundingClientRect();
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const scale = Math.max(vr.width / vw, vr.height / vh);
+  const ox = (vr.width - vw * scale) / 2, oy = (vr.height - vh * scale) / 2;
+  let x = (fr.left - vr.left - ox) / scale, y = (fr.top - vr.top - oy) / scale, w = fr.width / scale, h = fr.height / scale;
+  x = Math.max(0, x); y = Math.max(0, y); w = Math.min(vw - x, w); h = Math.min(vh - y, h);
+  return { x, y, w, h };
+}
+
+/* ---------- photo camera (for product photos; nothing goes to the gallery) ---------- */
+function openPhotoCamera(onShot, { title = '拍商品照片', hint = '把商品放在畫面中間' } = {}) {
+  const el = document.createElement('div');
+  el.className = 'overlay';
+  el.innerHTML = `<div class="cam">
+      <video muted playsinline></video>
+      <div class="cam-top"><button class="icon-btn" data-close aria-label="關閉">${ic('x')}</button><div class="grow"><b>${esc(title)}</b></div>
+        <button class="icon-btn" data-torch hidden aria-label="手電筒">${ic('flash')}</button></div>
+      <div class="cam-bottom"><div class="cam-msg" data-msg>${esc(hint)}</div><button class="shutter" data-shot aria-label="拍照"></button></div>
+    </div>`;
+  const video = $('video', el), msg = $('[data-msg]', el);
+  let running = true;
+  pushOverlay(el, { onClose: () => { running = false; Cam.stop(video); } });
+  $('[data-close]', el).onclick = () => closeTop();
+  let torchOn = false;
+  $('[data-torch]', el).onclick = async e => { torchOn = !torchOn; await Cam.torch(torchOn); e.currentTarget.classList.toggle('on', torchOn); };
+  (async () => {
+    try { await Cam.start(video); if (!running) return Cam.stop(video); if (Cam.canTorch()) $('[data-torch]', el).hidden = false; }
+    catch (e) { msg.textContent = e.name === 'NotAllowedError' ? '沒有相機權限，請在 Chrome 設定中允許。' : '無法開啟相機。'; }
+  })();
+  $('[data-shot]', el).onclick = async () => {
+    if (!video.videoWidth) return;
+    msg.textContent = '處理中…';
+    const snap = await hiResSnapshot(video);
+    const c = toCanvas(snap.src, 0, 0, snap.src.videoWidth || snap.src.width, snap.src.videoHeight || snap.src.height, 2000);
+    snap.src.close?.();
+    await closeTop();
+    onShot(c);
+  };
+}
+
+function openPhotoViewer(photo, { onMain, onDelete, isMain } = {}) {
+  const el = document.createElement('div');
+  el.className = 'overlay';
+  el.innerHTML = `<div class="cam" style="background:#000">
+      <div class="cam-top"><button class="icon-btn" data-close aria-label="關閉">${ic('x')}</button><div class="grow"></div></div>
+      <img alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain" src="${photo.thumb}">
+      ${onMain || onDelete ? `<div class="cam-bottom"><div class="row" style="gap:8px">
+        ${onMain ? `<button class="btn grow" data-main ${isMain ? 'disabled' : ''}>${isMain ? '目前的主圖' : '設為主圖'}</button>` : ''}
+        ${onDelete ? `<button class="btn ghost grow" data-del>${ic('trash')}刪除</button>` : ''}</div></div>` : ''}
+    </div>`;
+  pushOverlay(el);
+  const img = $('img', el);
+  (photo.full ? Promise.resolve(photo.full) : Photos.get(photo.id)).then(d => { if (d) img.src = d; });
+  $('[data-close]', el).onclick = () => closeTop();
+  const m = $('[data-main]', el); if (m) m.onclick = async () => { await closeTop(); onMain(); };
+  const d = $('[data-del]', el); if (d) d.onclick = async () => { await closeTop(); onDelete(); };
+}
+
+/* ---------- photo editor inside the product form ---------- */
+function createPhotoDraft(product, prefill = []) {
+  const list = (product.photos || []).map(p => ({ ...p }));
+  for (const p of prefill) list.push(p);
+  let main = product.mainPhoto && list.some(p => p.id === product.mainPhoto) ? product.mainPhoto : list[0]?.id || null;
+  const removed = [];
+  let ctxRef = null, getName = () => '', getCodes = () => [], setName = () => {};
+  const draw = () => {
+    const box = ctxRef?.$('[data-photos]'); if (!box) return;
+    box.innerHTML = `<div class="photo-strip">${list.map(p => `<button type="button" class="ph ${p.id === main ? 'main' : ''}" data-ph="${p.id}"><img alt="" src="${p.thumb}">${p.id === main ? '<span class="badge">主圖</span>' : ''}</button>`).join('')}
+        ${list.length ? '' : `<div class="ph empty">${ic('camera')}<span>還沒有照片</span></div>`}</div>
+      <div class="row" style="gap:6px;margin-top:8px">
+        <button type="button" class="btn sm grow" data-ph-cam>${ic('camera')}拍照</button>
+        <button type="button" class="btn sm grow" data-ph-file>${ic('in')}相簿</button>
+        <button type="button" class="btn sm grow" data-ph-web>${ic('search')}上網找圖</button>
+      </div>
+      ${getCodes().length ? `<button type="button" class="btn sm block" style="margin-top:6px" data-ph-off>${ic('barcode')}用條碼查詢商品資料</button>` : ''}
+      <div class="hint" data-ph-hint>${list.length > 1 ? '點照片可以設為主圖或刪除。' : ''}</div>`;
+    $$('[data-ph]', box).forEach(b => b.onclick = () => {
+      const p = list.find(x => x.id === b.dataset.ph);
+      openPhotoViewer(p, {
+        isMain: p.id === main,
+        onMain: () => { main = p.id; draw(); },
+        onDelete: () => { const i = list.indexOf(p); list.splice(i, 1); if (product.photos?.some(x => x.id === p.id)) removed.push(p.id); if (main === p.id) main = list[0]?.id || null; draw(); },
+      });
+    });
+    $('[data-ph-cam]', box).onclick = () => openPhotoCamera(c => { add(makePhoto(c)); c.width = c.height = 0; });
+    $('[data-ph-file]', box).onclick = async () => {
+      const f = await pickImageFile(); if (!f) return;
+      try { const c = await fileToCanvas(f); add(makePhoto(c)); c.width = c.height = 0; } catch (e) { toast('無法讀取這張圖片'); }
+    };
+    $('[data-ph-web]', box).onclick = () => {
+      const n = getName().trim();
+      if (!n) return toast('請先輸入商品名稱，才能用名稱找圖');
+      window.open(`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(n)}`, '_blank', 'noopener');
+      toast('找到喜歡的圖，長按下載後，回來按「相簿」選取', null);
+    };
+    const off = $('[data-ph-off]', box);
+    if (off) off.onclick = async () => {
+      off.disabled = true; off.textContent = '查詢中…';
+      let r = null;
+      for (const code of getCodes()) { r = await offLookup(code, true); if (r) break; }
+      off.disabled = false; off.innerHTML = `${ic('barcode')}用條碼查詢商品資料`;
+      if (!r) return toast(navigator.onLine ? '資料庫裡查不到這個條碼' : '需要連網才能查詢');
+      if (r.photo) add(r.photo);
+      if (r.name && !getName().trim()) setName(r.name);
+      toast(r.photo ? '已加入查到的照片' : `查到：${r.name}`);
+    };
+  };
+  function add(p) { list.push(p); if (!main) main = p.id; draw(); }
+  return {
+    html: () => `<div class="field"><div class="label">商品照片</div><div data-photos></div></div>`,
+    bind(ctx, opts) { ctxRef = ctx; getName = opts.getName; getCodes = opts.getCodes; setName = opts.setName; draw(); },
+    async commit(target) {
+      for (const p of list) if (p.full) { await Photos.put(p.id, p.full); delete p.full; }
+      for (const id of removed) await Photos.del(id);
+      target.photos = list.map(p => ({ id: p.id, thumb: p.thumb }));
+      target.mainPhoto = main;
+    },
+  };
+}
+function mainThumb(p) { const ph = (p.photos || []).find(x => x.id === p.mainPhoto) || (p.photos || [])[0]; return ph ? ph.thumb : null; }
+function thumbHTML(p, cls = '') {
+  const t = mainThumb(p);
+  return `<div class="thumb ${cls}">${t ? `<img alt="" src="${t}" loading="lazy">` : `<span>${esc((p.name || '?').trim().slice(0, 1))}</span>`}</div>`;
+}
+
+/* ---------- Open Food Facts ---------- */
+async function offLookup(code, withPhoto = true) {
+  if (!navigator.onLine || !/^\d{6,14}$/.test(code)) return null;
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,product_name_zh,product_name_en,brands,quantity,image_front_url,image_url`, { signal: ctrl.signal });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (j.status !== 1 || !j.product) return null;
+    const p = j.product;
+    const base = (p.product_name_zh || p.product_name || p.product_name_en || '').trim();
+    const brand = (p.brands || '').split(',')[0].trim();
+    let name = base;
+    if (brand && !base.toLowerCase().includes(brand.toLowerCase())) name = `${brand} ${base}`.trim();
+    if (p.quantity && !name.includes(p.quantity)) name = `${name} ${p.quantity}`.trim();
+    if (!name) return null;
+    let photo = null;
+    const img = p.image_front_url || p.image_url;
+    if (withPhoto && img) {
+      try {
+        const ir = await fetch(img, { signal: ctrl.signal, mode: 'cors' });
+        if (ir.ok) { const c = await fileToCanvas(await ir.blob()); photo = makePhoto(c); c.width = c.height = 0; }
+      } catch (e) { /* 圖片抓不到就只用名稱 */ }
+    }
+    return { name, photo };
+  } catch (e) { return null; } finally { clearTimeout(t); }
+}
+
+/* ---------- new barcode flow: look up first, then create / link ---------- */
+function handleCode(code, mode) {
+  const p = prodByBarcode(code);
+  if (p) return mode === 'in' ? openStockIn(p.id, { fromScan: true }) : openStockOut(p.id, { fromScan: true });
+  let found = null, state = navigator.onLine ? 'loading' : 'offline';
+  const after = np => (mode === 'in' ? openStockIn : openStockOut)(np.id, { fromScan: true });
+  const render = ctx => {
+    ctx.setBody(`<div class="card"><div class="row">${ic('barcode')}<b style="font-variant-numeric:tabular-nums;font-size:18px">${esc(code)}</b></div></div>
+      ${state === 'loading' ? `<div class="card row small muted"><span class="spin"></span>正在查詢商品資料庫…</div>` : ''}
+      ${state === 'found' ? `<div class="card"><div class="row" style="align-items:flex-start">${found.photo ? `<div class="thumb lg"><img alt="" src="${found.photo.thumb}"></div>` : ''}<div class="grow"><div class="small muted">在 Open Food Facts 查到</div><b>${esc(found.name)}</b></div></div></div>` : ''}
+      ${state === 'none' || state === 'offline' ? `<p class="muted small" style="margin:0 2px 12px">${state === 'offline' ? '目前沒有網路，無法查詢商品資料庫。' : '商品資料庫裡查不到這個條碼。'}第一次需要建立商品資料，之後再掃就會自動認得。</p>` : ''}
+      ${state === 'found' ? `<button class="btn primary block" data-use>${ic('check')}用查到的資料建立</button><div class="spacer"></div><button class="btn block" data-new>自己填寫</button>`
+        : `<button class="btn primary block" data-new ${state === 'loading' ? 'disabled' : ''}>${ic('plus')}建立新商品</button>`}
+      <div class="spacer"></div>
+      <button class="btn block" data-link>${ic('tag')}加到已有的商品</button>
+      <div class="hint" style="margin-top:6px">例如同一款衛生紙的單包和整袋條碼不同，可以都加到同一個商品。</div>`);
+    const u = ctx.$('[data-use]');
+    if (u) u.onclick = async () => { await closeTop(); openProductForm({ barcode: code, prefill: { name: found.name, photos: found.photo ? [found.photo] : [] }, onSaved: after }); };
+    ctx.$('[data-new]').onclick = async () => { await closeTop(); openProductForm({ barcode: code, onSaved: after }); };
+    ctx.$('[data-link]').onclick = async () => {
+      await closeTop();
+      pickProduct(tp => {
+        tp.barcodes = [...(tp.barcodes || []), code];
+        commit(); toast(`已把條碼加到「${tp.name}」`);
+        after(tp);
+      }, { preferNoBarcode: true });
+    };
+  };
+  const ctx = sheet({ title: '新的條碼', onMount: render, refresh: null });
+  if (state === 'loading') {
+    offLookup(code).then(r => {
+      found = r; state = r ? 'found' : 'none';
+      if (overlays.some(o => o.el === ctx.el)) render(ctx);
+    });
+  }
+}
+
+function pickProduct(onPick, { preferNoBarcode = false } = {}) {
+  let q = '';
+  const row = p => `<div class="item tap" data-pick="${p.id}">${thumbHTML(p)}<div class="main"><div class="name">${esc(p.name)}</div><div class="meta">${esc(catById(p.categoryId)?.name || '')}${(p.barcodes || []).length ? '' : '・<span>未綁定條碼</span>'}</div></div><div class="qty">${esc(fmtQty(p, stockOf(p)))}</div></div>`;
+  const render = ctx => {
+    const all = S.products.filter(p => !q || p.name.toLowerCase().includes(q.toLowerCase())).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+    let h = '';
+    if (preferNoBarcode && !q) {
+      const recent = S.products.filter(p => !(p.barcodes || []).length).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 8);
+      if (recent.length) h += `<div class="section-title" style="margin-top:4px"><span>最近建立、還沒有條碼</span></div><div class="list">${recent.map(row).join('')}</div><div class="section-title"><span>全部商品</span></div>`;
+    }
+    h += all.length ? `<div class="list">${all.map(row).join('')}</div>` : `<div class="empty small">${S.products.length ? '找不到符合的商品' : '還沒有任何商品'}</div>`;
+    ctx.$('[data-list]').innerHTML = h;
+    ctx.$$('[data-pick]').forEach(el => el.onclick = async () => { const p = prodById(el.dataset.pick); await closeTop(); onPick(p); });
+  };
+  sheet({
+    title: '選擇商品', full: true,
+    body: `<label class="search" style="margin-top:0">${ic('search')}<input type="search" placeholder="搜尋商品" data-s></label><div data-list></div>`,
+    onMount: ctx => {
+      render(ctx);
+      const s = ctx.$('[data-s]');
+      s.addEventListener('input', e => { if (e.isComposing) return; q = s.value; render(ctx); });
+      s.addEventListener('compositionend', () => { q = s.value; render(ctx); });
+    },
+  });
+}
+
+/* =========================================================
+   Gemini (AI)
+   ========================================================= */
+const AI = { key: null, model: null, forDates: true };
+async function loadAI() {
+  try {
+    const v = await IDB.get('ai');
+    if (v) Object.assign(AI, v);
+  } catch (e) {}
+}
+async function saveAI() { await IDB.set('ai', { key: AI.key, model: AI.model, forDates: AI.forDates }); }
+const aiReady = () => !!(AI.key && navigator.onLine);
+
+class AIError extends Error {
+  constructor(code, detail = '') { super(code); this.code = code; this.detail = detail; }
+  get zh() {
+    return ({
+      nokey: '還沒有設定 AI 金鑰', offline: '目前沒有網路', timeout: 'AI 回應太久，請再試一次', network: '連不上 AI 服務',
+      quota: '免費額度暫時用完了，請等一下再試', badkey: '金鑰無效，請到設定檢查', model: '找不到這個 AI 模型，請到設定重新測試金鑰',
+      parse: 'AI 的回應看不懂，請再試一次', bad: 'AI 拒絕了這個請求', http: 'AI 服務發生錯誤',
+    })[this.code] || 'AI 發生錯誤';
+  }
+}
+const GEM = 'https://generativelanguage.googleapis.com/v1beta';
+function parseLooseJSON(t) {
+  t = String(t || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  try { return JSON.parse(t); } catch (e) {}
+  const a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if (a >= 0 && b > a) { try { return JSON.parse(t.slice(a, b + 1)); } catch (e) {} }
+  throw new AIError('parse');
+}
+async function geminiCall(parts, { model = AI.model, timeout = 60000, json = true } = {}) {
+  if (!AI.key) throw new AIError('nokey');
+  if (!navigator.onLine) throw new AIError('offline');
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(`${GEM}/models/${model || 'gemini-2.5-flash'}:generateContent`, {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': AI.key },
+      body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: .2, ...(json ? { responseMimeType: 'application/json' } : {}) } }),
+    });
+  } catch (e) { throw new AIError(e.name === 'AbortError' ? 'timeout' : 'network'); } finally { clearTimeout(t); }
+  if (res.status === 429) throw new AIError('quota');
+  if (res.status === 404) throw new AIError('model');
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    const msg = j.error?.message || '';
+    if (/api key|API_KEY|permission/i.test(msg) || res.status === 401 || res.status === 403) throw new AIError('badkey', msg);
+    if (/quota|exhausted|limit/i.test(msg)) throw new AIError('quota', msg);
+    throw new AIError(res.status === 400 ? 'bad' : 'http', msg);
+  }
+  const j = await res.json();
+  const text = (j.candidates?.[0]?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('');
+  if (!text) throw new AIError('parse');
+  return json ? parseLooseJSON(text) : text;
+}
+const imgPart = canvas => ({ inline_data: { mime_type: 'image/jpeg', data: canvas.toDataURL('image/jpeg', .85).split(',')[1] } });
+
+async function geminiModels() {
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 15000);
+  let res;
+  try { res = await fetch(`${GEM}/models?pageSize=200`, { headers: { 'x-goog-api-key': AI.key }, signal: ctrl.signal }); }
+  catch (e) { throw new AIError(e.name === 'AbortError' ? 'timeout' : 'network'); } finally { clearTimeout(t); }
+  if (!res.ok) throw new AIError(res.status === 429 ? 'quota' : 'badkey');
+  const j = await res.json();
+  const ver = n => (n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] * 1 || 0;
+  return (j.models || [])
+    .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map(m => m.name.replace(/^models\//, ''))
+    .filter(n => /^gemini-\d+(\.\d+)?-flash(-lite)?(-latest)?$/.test(n))
+    .sort((a, b) => ver(b) - ver(a) || (a.includes('lite') - b.includes('lite')));
+}
+async function geminiSetup(onStatus) {
+  onStatus('檢查金鑰…');
+  const models = await geminiModels();
+  if (!models.length) throw new AIError('model');
+  let lastErr = null;
+  for (const m of models.slice(0, 6)) {
+    onStatus(`測試 ${m}…`);
+    try {
+      const r = await geminiCall([{ text: '只回傳 JSON：{"ok":true}' }], { model: m, timeout: 20000 });
+      if (r && r.ok) { AI.model = m; await saveAI(); return { model: m, models }; }
+    } catch (e) { lastErr = e; if (e.code === 'badkey') throw e; }
+  }
+  throw lastErr || new AIError('model');
+}
+
+/* ---------- AI settings ---------- */
+function openAISettings() {
+  const render = ctx => {
+    ctx.setBody(`
+      <div class="banner info">${ic('sparkle')}<div class="small">AI 辨識使用 Google Gemini。拍照後<b>照片會傳送給 Google 辨識</b>，App 不會另外儲存，除非你把裁切後的照片用作商品照片。免費方案的資料可能被 Google 用來改善產品，請只拍商品和日期。</div></div>
+      <div class="field"><label>Gemini API 金鑰</label>
+        <div class="row" style="gap:6px"><input class="input grow" type="password" data-key autocomplete="off" spellcheck="false" placeholder="貼上金鑰" value="${esc(AI.key || '')}"><button class="icon-btn" data-eye aria-label="顯示">${ic('search')}</button></div>
+        <div class="hint">金鑰只存在這支手機，不會出現在 GitHub，也不會包含在備份檔裡。<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">到 Google AI Studio 取得金鑰</a></div></div>
+      <button class="btn primary block" data-test>${ic('check')}儲存並測試</button>
+      <div class="hint" data-status style="margin:8px 2px 0">${AI.model ? `目前使用模型：${esc(AI.model)}` : '尚未設定'}</div>
+      <div class="hr"></div>
+      <div class="switch-row" style="border:0"><div class="grow"><div>到期日用 AI 辨識</div><div class="small muted">沒網路或額度用完時，自動改用手機本機辨識</div></div><label class="switch"><input type="checkbox" data-dates ${AI.forDates ? 'checked' : ''}><span></span></label></div>
+      ${AI.key ? `<div class="hr"></div><button class="btn danger block" data-del>${ic('trash')}刪除金鑰</button>` : ''}`);
+    const key = ctx.$('[data-key]'), st = ctx.$('[data-status]');
+    ctx.$('[data-eye]').onclick = () => { key.type = key.type === 'password' ? 'text' : 'password'; };
+    ctx.$('[data-dates]').onchange = e => { AI.forDates = e.target.checked; saveAI(); };
+    ctx.$('[data-test]').onclick = async () => {
+      const v = key.value.trim();
+      if (!v) return toast('請先貼上金鑰');
+      const btn = ctx.$('[data-test]'); btn.disabled = true;
+      AI.key = v; await saveAI();
+      try {
+        const r = await geminiSetup(s => { st.textContent = s; });
+        st.innerHTML = `<span style="color:var(--accent);font-weight:600">可以使用！</span>模型：${esc(r.model)}`;
+        toast('AI 辨識已啟用');
+        renderMain();
+      } catch (e) { st.innerHTML = `<span style="color:var(--danger)">${esc(e.zh || '測試失敗')}</span>`; }
+      btn.disabled = false;
+    };
+    const d = ctx.$('[data-del]');
+    if (d) d.onclick = async () => { if (!await confirmDialog('刪除 AI 金鑰？AI 辨識功能會停用。', { ok: '刪除', danger: true })) return; AI.key = null; AI.model = null; await saveAI(); render(ctx); renderMain(); };
+  };
+  sheet({ title: 'AI 辨識', full: true, onMount: render });
+}
+
+/* =========================================================
+   Expiry date recognition (AI or on-device)
+   ========================================================= */
+const TESS_SRC_V = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+let tessW = null;
+async function getTessWorker(onStatus) {
+  if (tessW) return tessW;
+  onStatus('第一次使用，正在下載辨識資料…');
+  await loadScript(TESS_SRC_V);
+  tessW = await Tesseract.createWorker('eng', 1, {
+    logger: m => { if (m.status && m.progress != null && /load|initializ/i.test(m.status)) onStatus(`準備辨識中 ${Math.round(m.progress * 100)}%`); },
+  });
+  return tessW;
+}
+function ocrVariant(src, kind) {
+  // kind: plain | dots | big
+  const up = kind === 'big' ? 2 : 1;
+  const c = toCanvas(src, 0, 0, src.width, src.height, Math.max(src.width, src.height) * up);
+  const w = c.width, h = c.height, g = c.getContext('2d', { willReadFrequently: true });
+  const img = g.getImageData(0, 0, w, h), d = img.data;
+  let a = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) a[j] = d[i] * .299 + d[i + 1] * .587 + d[i + 2] * .114;
+  if (kind === 'dots' || kind === 'big') {
+    const r = Math.max(1, Math.round(w / (kind === 'big' ? 700 : 450)));
+    const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) { let s = 0; for (let x = -r; x <= r; x++) s += a[y * w + Math.min(w - 1, Math.max(0, x))]; for (let x = 0; x < w; x++) { tmp[y * w + x] = s / (2 * r + 1); s += a[y * w + Math.min(w - 1, x + r + 1)] - a[y * w + Math.max(0, x - r)]; } }
+    for (let x = 0; x < w; x++) { let s = 0; for (let y = -r; y <= r; y++) s += tmp[Math.min(h - 1, Math.max(0, y)) * w + x]; for (let y = 0; y < h; y++) { out[y * w + x] = s / (2 * r + 1); s += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x]; } }
+    a = out;
+  }
+  const hist = new Array(256).fill(0);
+  for (const v of a) hist[Math.max(0, Math.min(255, v | 0))]++;
+  let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sumB = 0, wB = 0, best = 0, th = 127; const total = a.length;
+  for (let i = 0; i < 256; i++) { wB += hist[i]; if (!wB) continue; const wF = total - wB; if (!wF) break; sumB += i * hist[i]; const mB = sumB / wB, mF = (sum - sumB) / wF; const bt = wB * wF * (mB - mF) ** 2; if (bt > best) { best = bt; th = i; } }
+  let dark = 0; for (const v of a) if (v < th) dark++;
+  const inv = dark > total * .55;
+  for (let j = 0, i = 0; j < a.length; j++, i += 4) { let v = a[j] < th ? 0 : 255; if (inv) v = 255 - v; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+async function localDateOCR(crop, onStatus) {
+  const w = await getTessWorker(onStatus);
+  let text = '', dates = [];
+  const plan = [['plain', '6'], ['dots', '6'], ['plain', '7'], ['big', '7']];
+  for (const [kind, psm] of plan) {
+    onStatus('辨識中…');
+    const v = ocrVariant(crop, kind);
+    await w.setParameters({ tessedit_pageseg_mode: psm, preserve_interword_spaces: '1' });
+    const r = await w.recognize(v);
+    v.width = v.height = 0;
+    const t = (r.data.text || '').trim();
+    if (t) text += (text ? '\n' : '') + t;
+    dates = DateParse.parse(text);
+    if (dates.length) break;
+  }
+  return { text, dates };
+}
+async function aiDateOCR(crop) {
+  const r = await geminiCall([
+    { text: '這是商品包裝上印有日期的區域。請讀出上面的日期，只回傳 JSON：{"text":"你看到的原始文字","dates":[{"date":"YYYY-MM-DD","kind":"expiry|manufacture|unknown"}]}。民國年請換算成西元（例如 115 年 = 2026 年）。只有年月時用該月最後一天。點陣字、噴墨字也請盡量辨識。看不清楚就回傳空陣列。' },
+    imgPart(crop),
+  ], { timeout: 30000 });
+  const order = { expiry: 0, unknown: 1, manufacture: 2 };
+  const list = (r.dates || []).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d.date) && !isNaN(parseISO(d.date)))
+    .sort((a, b) => (order[a.kind] ?? 1) - (order[b.kind] ?? 1));
+  return { text: r.text || '', dates: [...new Set(list.map(d => d.date))], kinds: Object.fromEntries(list.map(d => [d.date, d.kind])) };
+}
+
+function openDateOCR(onPick) {
+  let useAI = !!(AI.key && AI.forDates);
+  const el = document.createElement('div');
+  el.className = 'overlay';
+  el.innerHTML = `<div class="cam">
+      <video muted playsinline></video>
+      <div class="frame date"></div>
+      <div class="cam-top">
+        <button class="icon-btn" data-close aria-label="關閉">${ic('x')}</button>
+        <div class="grow"><b>拍到期日</b><div class="small" style="opacity:.85" data-priv></div></div>
+        ${AI.key ? `<div class="seg" style="width:118px"><button data-eng="ai">AI</button><button data-eng="local">本機</button></div>` : ''}
+        <button class="icon-btn" data-torch aria-label="手電筒" hidden>${ic('flash')}</button>
+      </div>
+      <div class="cam-bottom">
+        <div class="cam-msg" data-msg>只框住到期日那一行，盡量拿穩、避開反光</div>
+        <div class="cands" data-cands style="margin-top:8px"></div>
+        <div class="rawtext" data-raw hidden></div>
+        <div class="sliders" data-sliders>
+          <label>寬<input type="range" min="40" max="96" value="82" data-fw></label>
+          <label>高<input type="range" min="36" max="260" value="96" data-fh></label>
+        </div>
+        <button class="shutter" data-shot aria-label="拍照辨識"></button>
+      </div>
+    </div>`;
+  const video = $('video', el), msg = $('[data-msg]', el), cands = $('[data-cands]', el), shot = $('[data-shot]', el), raw = $('[data-raw]', el), frame = $('.frame', el);
+  let running = true, busy = false;
+  const work = [];
+  const cleanup = () => { running = false; Cam.stop(video); work.forEach(c => { if (c.width != null) { c.width = c.height = 0; } c.close?.(); }); work.length = 0; };
+  pushOverlay(el, { onClose: cleanup });
+  $('[data-close]', el).onclick = () => closeTop();
+  const setEng = () => {
+    $$('[data-eng]', el).forEach(b => b.classList.toggle('on', (b.dataset.eng === 'ai') === useAI));
+    $('[data-priv]', el).textContent = useAI ? '照片會傳送給 Google 辨識，不會儲存' : '在手機上辨識，照片不會儲存';
+  };
+  $$('[data-eng]', el).forEach(b => b.onclick = () => { useAI = b.dataset.eng === 'ai'; setEng(); });
+  setEng();
+  const fw = $('[data-fw]', el), fh = $('[data-fh]', el);
+  const applyFrame = () => { frame.style.width = `${fw.value}vw`; frame.style.height = `${fh.value}px`; };
+  fw.oninput = fh.oninput = applyFrame; applyFrame();
+  let torchOn = false;
+  $('[data-torch]', el).onclick = async e => { torchOn = !torchOn; await Cam.torch(torchOn); e.currentTarget.classList.toggle('on', torchOn); };
+  (async () => {
+    try { await Cam.start(video); if (!running) return Cam.stop(video); if (Cam.canTorch()) $('[data-torch]', el).hidden = false; }
+    catch (e) { msg.textContent = e.name === 'NotAllowedError' ? '沒有相機權限，請在 Chrome 設定中允許。' : '無法開啟相機。'; shot.hidden = true; }
+  })();
+
+  shot.onclick = async () => {
+    if (busy || !video.videoWidth) return;
+    busy = true; shot.style.opacity = .4; cands.innerHTML = ''; raw.hidden = true;
+    try {
+      const r0 = frameRectInVideo(video, frame);
+      const padX = r0.w * .05, padY = r0.h * .15;
+      const rv = { x: Math.max(0, r0.x - padX), y: Math.max(0, r0.y - padY) };
+      rv.w = Math.min(video.videoWidth - rv.x, r0.w + padX * 2); rv.h = Math.min(video.videoHeight - rv.y, r0.h + padY * 2);
+      msg.textContent = '拍攝中…';
+      const snap = await hiResSnapshot(video);
+      if (snap.src !== video) work.push(snap.src);
+      const k = snap.scale;
+      const crop = toCanvas(snap.src, rv.x * k, rv.y * k, rv.w * k, rv.h * k, 2000);
+      work.push(crop);
+      if (!running) return;
+      let result = null, note = '';
+      if (useAI && aiReady()) {
+        msg.textContent = 'AI 辨識中…';
+        try { result = await aiDateOCR(crop); }
+        catch (e) { note = `${e.zh || 'AI 失敗'}，改用本機辨識`; }
+      } else if (useAI) note = '目前沒有網路，改用本機辨識';
+      if (!running) return;
+      if (!result) {
+        msg.textContent = note || '辨識中…';
+        result = await localDateOCR(crop, s => { msg.textContent = (note ? note + '・' : '') + s; });
+      }
+      work.forEach(c => { if (c.width != null) { c.width = c.height = 0; } c.close?.(); }); work.length = 0;
+      if (!running) return;
+      if (result.text) { raw.hidden = false; raw.textContent = `辨識到的文字：${result.text.replace(/\s+/g, ' ').slice(0, 120)}`; }
+      if (result.dates.length) {
+        msg.textContent = (note ? note + '・' : '') + '點選正確的日期';
+        const kindLabel = { manufacture: '（製造日）' };
+        cands.innerHTML = result.dates.map(d => `<button data-d="${d}">${fmtDate(d)}${kindLabel[result.kinds?.[d]] || ''}</button>`).join('');
+        $$('[data-d]', cands).forEach(b => b.onclick = async () => { const d = b.dataset.d; await closeTop(); onPick(d); toast(`已填入 ${fmtDate(d)}，請確認是否正確`); });
+      } else {
+        msg.textContent = (note ? note + '・' : '') + '沒有辨識出日期。調整框的大小再拍一次，或關閉後手動輸入';
+      }
+    } catch (e) {
+      console.error(e);
+      msg.textContent = navigator.onLine ? '辨識失敗，請再試一次' : '第一次使用本機辨識需要連網下載辨識資料';
+    } finally { busy = false; shot.style.opacity = 1; }
+  };
+}
+
+/* =========================================================
+   AI photo product creation (front + barcode side)
+   ========================================================= */
+function normName(s) { return String(s || '').toLowerCase().replace(/[\s\-_.,，、。()（）\[\]【】「」'"/]+/g, ''); }
+function similar(a, b) {
+  a = normName(a); b = normName(b);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a))) return .85;
+  const grams = s => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const g = s.slice(i, i + 2); m.set(g, (m.get(g) || 0) + 1); } return m; };
+  const A = grams(a), B = grams(b); let inter = 0, tot = 0;
+  for (const [g, n] of A) { inter += Math.min(n, B.get(g) || 0); tot += n; }
+  for (const n of B.values()) tot += n;
+  return tot ? 2 * inter / tot : 0;
+}
+function findSimilarProduct(name) {
+  let best = null, score = 0;
+  for (const p of S.products) { const s = similar(name, p.name); if (s > score) { score = s; best = p; } }
+  return score >= .6 ? best : null;
+}
+async function detectBarcodesIn(canvas) {
+  if (!('BarcodeDetector' in window)) return [];
+  try {
+    const sup = await BarcodeDetector.getSupportedFormats();
+    const d = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf', 'qr_code'].filter(f => sup.includes(f)) });
+    const r = await d.detect(canvas);
+    const seen = new Set();
+    return r.filter(x => x.rawValue && !seen.has(x.rawValue) && seen.add(x.rawValue)).map(x => ({
+      code: x.rawValue,
+      cx: (x.boundingBox.x + x.boundingBox.width / 2) / canvas.width * 1000,
+      cy: (x.boundingBox.y + x.boundingBox.height / 2) / canvas.height * 1000,
+    }));
+  } catch (e) { return []; }
+}
+function assignBarcodes(items, codes, boxKey) {
+  const free = new Set(items.map((_, i) => i));
+  const pairs = [];
+  for (const c of codes) {
+    items.forEach((it, i) => {
+      const b = it[boxKey]; if (!Array.isArray(b) || b.length !== 4) return;
+      const [y0, x0, y1, x1] = b;
+      const inside = c.cx >= x0 && c.cx <= x1 && c.cy >= y0 && c.cy <= y1;
+      const dist = Math.hypot(c.cx - (x0 + x1) / 2, c.cy - (y0 + y1) / 2);
+      const area = Math.max(1, (x1 - x0) * (y1 - y0));
+      pairs.push({ c, i, s: inside ? -1e9 + area : dist });
+    });
+  }
+  pairs.sort((a, b) => a.s - b.s);
+  const used = new Set();
+  for (const p of pairs) {
+    if (used.has(p.c.code) || !free.has(p.i)) continue;
+    if (p.s > 260) continue; // 太遠就不配
+    items[p.i].barcode = p.c.code; used.add(p.c.code); free.delete(p.i);
+  }
+  return codes.filter(c => !used.has(c.code)).map(c => c.code);
+}
+function cropBox(canvas, box) {
+  if (!Array.isArray(box) || box.length !== 4) return null;
+  let [y0, x0, y1, x1] = box.map(Number);
+  if (![y0, x0, y1, x1].every(isFinite) || y1 <= y0 || x1 <= x0) return null;
+  const W = canvas.width, H = canvas.height;
+  const px = (x1 - x0) * .06, py = (y1 - y0) * .06;
+  x0 = Math.max(0, x0 - px); x1 = Math.min(1000, x1 + px); y0 = Math.max(0, y0 - py); y1 = Math.min(1000, y1 + py);
+  const c = toCanvas(canvas, x0 / 1000 * W, y0 / 1000 * H, (x1 - x0) / 1000 * W, (y1 - y0) / 1000 * H, 1200);
+  const ph = makePhoto(c); c.width = c.height = 0;
+  return ph;
+}
+
+function openAddChooser() {
+  sheet({
+    title: '新增商品',
+    body: `<button class="setting-row" data-ai style="border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow);margin-bottom:10px">${ic('sparkle', 'lead')}<span class="grow"><div style="font-weight:700">AI 拍照建立（多項）</div><div class="small muted">拍正面和條碼面兩張，一次建立好幾項商品</div></span>${ic('chev', 'chev')}</button>
+      <button class="setting-row" data-manual style="border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow)">${ic('edit', 'lead')}<span class="grow"><div style="font-weight:700">手動新增一項</div><div class="small muted">自己填寫名稱、分類和照片</div></span>${ic('chev', 'chev')}</button>`,
+    onMount: ctx => {
+      ctx.$('[data-ai]').onclick = async () => { await closeTop(); openAIBuild(); };
+      ctx.$('[data-manual]').onclick = async () => { await closeTop(); openProductForm({ onSaved: p => openProduct(p.id) }); };
+    },
+  });
+}
+
+async function openAIBuild() {
+  if (!AI.key) {
+    if (await confirmDialog('AI 拍照建立需要先在設定填入 Gemini 金鑰。現在要去設定嗎？', { ok: '去設定' })) openAISettings();
+    return;
+  }
+  if (!navigator.onLine) return toast('AI 辨識需要連網');
+  let twoShots = true;
+  const shots = [];
+  const el = document.createElement('div');
+  el.className = 'overlay';
+  el.innerHTML = `<div class="cam">
+      <video muted playsinline></video>
+      <img class="ghost-img" alt="" hidden>
+      <div class="cam-top">
+        <button class="icon-btn" data-close aria-label="關閉">${ic('x')}</button>
+        <div class="grow"><div class="seg"><button data-n="2" class="on">正面＋條碼</button><button data-n="1">只拍一張</button></div></div>
+        <button class="icon-btn" data-torch aria-label="手電筒" hidden>${ic('flash')}</button>
+      </div>
+      <div class="cam-bottom">
+        <div class="cam-msg" data-msg></div>
+        <div class="small" style="text-align:center;opacity:.8;margin-top:4px">照片會傳送給 Google 辨識・一次 3 到 6 樣最穩定</div>
+        <div class="row" style="justify-content:center;gap:18px;margin-top:6px">
+          <button class="btn ghost sm" data-redo hidden>重拍第一張</button>
+          <button class="shutter" data-shot aria-label="拍照"></button>
+          <span style="width:92px" data-sp></span>
+        </div>
+      </div>
+    </div>`;
+  const video = $('video', el), msg = $('[data-msg]', el), ghost = $('.ghost-img', el), redo = $('[data-redo]', el);
+  let running = true;
+  const freeShots = () => { shots.forEach(c => { c.width = c.height = 0; }); shots.length = 0; };
+  pushOverlay(el, { onClose: () => { running = false; Cam.stop(video); ghost.src = ''; } });
+  const step = () => {
+    $$('[data-n]', el).forEach(b => b.classList.toggle('on', (b.dataset.n === '2') === twoShots));
+    if (!twoShots) msg.innerHTML = '把商品排在桌上，<b>商品名稱和條碼都朝上</b>，從正上方拍';
+    else if (!shots.length) msg.innerHTML = '<b>第 1 張：正面</b>。商品排開、不要互相遮住，從正上方拍';
+    else msg.innerHTML = '<b>第 2 張：條碼面</b>。每樣商品原地轉到露出條碼，對齊淡淡的第一張再拍';
+    ghost.hidden = !(twoShots && shots.length);
+    redo.hidden = !(twoShots && shots.length);
+  };
+  $$('[data-n]', el).forEach(b => b.onclick = () => { twoShots = b.dataset.n === '2'; freeShots(); step(); });
+  redo.onclick = () => { freeShots(); step(); };
+  $('[data-close]', el).onclick = () => closeTop();
+  let torchOn = false;
+  $('[data-torch]', el).onclick = async e => { torchOn = !torchOn; await Cam.torch(torchOn); e.currentTarget.classList.toggle('on', torchOn); };
+  step();
+  (async () => {
+    try { await Cam.start(video); if (!running) return Cam.stop(video); if (Cam.canTorch()) $('[data-torch]', el).hidden = false; }
+    catch (e) { msg.textContent = e.name === 'NotAllowedError' ? '沒有相機權限，請在 Chrome 設定中允許。' : '無法開啟相機。'; }
+  })();
+  $('[data-shot]', el).onclick = async () => {
+    if (!video.videoWidth) return;
+    const c = grabFrame(video);
+    shots.push(c);
+    if (navigator.vibrate) navigator.vibrate(30);
+    if (twoShots && shots.length === 1) { ghost.src = c.toDataURL('image/jpeg', .6); step(); return; }
+    const imgs = [...shots]; shots.length = 0;
+    await closeTop();
+    runAIBuild(imgs);
+  };
+}
+
+async function runAIBuild(imgs) {
+  const ctx = sheet({ title: 'AI 辨識中', body: `<div class="card row"><span class="spin"></span><div class="grow"><b>正在辨識商品…</b><div class="small muted" data-st>照片已傳送給 Google，通常需要 5 到 20 秒</div></div></div>` });
+  const free = () => imgs.forEach(c => { c.width = c.height = 0; });
+  const alive = () => overlays.some(o => o.el === ctx.el);
+  const cats = S.categories.map(c => c.name);
+  const spots = S.areas.flatMap(a => a.spots.map(s => `${a.name}・${s.name}`));
+  const two = imgs.length === 2;
+  const small = imgs.map(c => toCanvas(c, 0, 0, c.width, c.height, 1600));
+  const prompt = `${two ? '你會看到兩張照片。第 1 張是桌上幾樣商品的正面；第 2 張是同樣的商品放在差不多的位置，但每樣都轉到露出條碼的那一面。' : '這張照片裡有幾樣商品。'}
+請找出照片中每一樣不同的商品，只回傳 JSON：
+{"items":[{"name":"商品名稱","category":"分類","location":"放置位置","box1":[ymin,xmin,ymax,xmax]${two ? ',"box2":[ymin,xmin,ymax,xmax]' : ''}}]}
+規則：
+- name：台灣常用的繁體中文名稱，保留包裝上的品牌和規格，例如「舒潔衛生紙 110抽」「統一純喫茶綠茶 650ml」。認不出品牌就寫最接近的描述。
+- category：只能從這些選一個：${cats.join('、')}
+- location：從這些選最可能存放的位置，不確定就給空字串：${spots.join('、')}
+- box1：這樣商品在第 1 張照片中的範圍${two ? '；box2：同一樣商品在第 2 張照片中的範圍' : ''}，座標是 0 到 1000 的整數，順序為 [ymin, xmin, ymax, xmax]。
+- 同一樣商品只列一次；不要列出背景、桌子、手或其他非商品物品。`;
+  let r;
+  try {
+    r = await geminiCall([{ text: prompt }, ...small.map(imgPart)], { timeout: 90000 });
+  } catch (e) {
+    small.forEach(c => { c.width = c.height = 0; }); free();
+    if (!alive()) return;
+    ctx.setTitle('辨識失敗');
+    ctx.setBody(`<div class="banner">${ic('alert')}<div class="grow">${esc(e.zh || 'AI 發生錯誤')}</div></div>`);
+    ctx.setFoot(`<button class="btn" data-close2>關閉</button><button class="btn primary" data-retry>重新拍照</button>`);
+    ctx.$('[data-close2]').onclick = () => closeTop();
+    ctx.$('[data-retry]').onclick = async () => { await closeTop(); openAIBuild(); };
+    return;
+  }
+  small.forEach(c => { c.width = c.height = 0; });
+  if (!alive()) { free(); return; }
+  ctx.$('[data-st]').textContent = '正在裁切照片、讀取條碼…';
+  const raw = Array.isArray(r.items) ? r.items.filter(x => x && x.name).slice(0, 20) : [];
+  const items = raw.map(x => {
+    const cat = S.categories.find(c => c.name === x.category) || S.categories.find(c => c.name === '其他') || S.categories[0];
+    let spotId = '';
+    for (const a of S.areas) for (const s of a.spots) if (`${a.name}・${s.name}` === x.location) spotId = s.id;
+    return { name: String(x.name).trim().slice(0, 60), categoryId: cat?.id || null, spotId, box1: x.box1, box2: x.box2, barcode: null, photo: cropBox(imgs[0], x.box1), checked: true };
+  });
+  const codes = await detectBarcodesIn(imgs[two ? 1 : 0]);
+  const extra = assignBarcodes(items, codes, two ? 'box2' : 'box1');
+  free();
+  for (const it of items) {
+    it.dup = (it.barcode && prodByBarcode(it.barcode)) || findSimilarProduct(it.name);
+    it.dupByCode = !!(it.barcode && prodByBarcode(it.barcode));
+    if (it.dup) it.checked = false;
+  }
+  await closeTop();
+  if (!items.length) { toast('AI 沒有在照片中找到商品，請再拍一次'); return; }
+  openAIResults(items, extra);
+}
+
+function openAIResults(items, extraCodes) {
+  const render = ctx => {
+    const n = items.filter(i => i.checked).length;
+    const nNew = items.filter(i => i.checked && !(i.link && i.dup)).length, nLink = n - nNew;
+    ctx.setTitle(`辨識到 ${items.length} 項商品`);
+    ctx.setBody(`<div class="hint" style="margin:0 2px 10px">確認名稱、分類和條碼後建立。這裡只建立商品資料，數量和到期日請之後入庫時填寫。</div>
+      ${items.map((it, i) => `<div class="ai-card ${it.checked ? '' : 'off'}">
+        <div class="row" style="align-items:flex-start">
+          <button class="check ${it.checked ? 'on' : ''}" data-chk="${i}" aria-label="勾選">${ic('check')}</button>
+          <div class="thumb lg" data-ph="${i}">${it.photo ? `<img alt="" src="${it.photo.thumb}">` : `<span>${ic('camera')}</span>`}</div>
+          <div class="grow">
+            <input class="input" data-name="${i}" value="${esc(it.name)}" placeholder="商品名稱">
+            ${it.dup ? `<div class="chip warn" style="margin-top:6px;white-space:normal">${it.dupByCode ? '條碼已屬於' : '可能已存在'}：${esc(it.dup.name)}</div>
+              ${!it.dupByCode ? `<div class="tri" style="margin-top:6px;grid-template-columns:1fr 1fr" data-mode="${i}">
+                <button type="button" data-v="link" class="${it.link ? 'on' : ''}">補到既有商品</button>
+                <button type="button" data-v="new" class="${it.link ? '' : 'on'}">當成新商品</button></div>
+              ${it.link ? `<div class="hint">勾選後，會把${it.barcode ? '條碼和' : ''}照片加到「${esc(it.dup.name)}」，不會另外建立。</div>` : ''}` : ''}` : ''}
+          </div>
+        </div>
+        <div class="row" style="gap:8px;margin-top:8px">
+          <select class="input grow" data-cat="${i}">${catOptions(it.categoryId)}</select>
+          <select class="input grow" data-spot="${i}">${spotOptions(it.spotId)}</select>
+        </div>
+        <div class="row" style="gap:6px;margin-top:8px">${ic('barcode')}
+          <span class="grow small" style="font-variant-numeric:tabular-nums">${it.barcode ? esc(it.barcode) : '<span class="muted">未綁定條碼</span>'}</span>
+          <button class="btn sm" data-scan="${i}">${it.barcode ? '重掃' : '掃描'}</button>
+          ${it.barcode ? `<button class="icon-btn ghost" data-unbind="${i}" aria-label="移除條碼">${ic('x')}</button>` : ''}
+        </div>
+      </div>`).join('')}
+      ${extraCodes.length ? `<div class="hint" style="margin:4px 2px 0">另外讀到沒配對上的條碼：${extraCodes.map(esc).join('、')}，可以在卡片按「掃描」補上。</div>` : ''}`);
+    ctx.setFoot(`<button class="btn" data-cancel>取消</button><button class="btn primary" data-create ${n ? '' : 'disabled'}>${nNew ? `建立 ${nNew} 項` : ''}${nNew && nLink ? '、' : ''}${nLink ? `更新 ${nLink} 項` : ''}${n ? '' : '建立商品'}</button>`);
+    ctx.$$('[data-chk]').forEach(b => b.onclick = () => { const it = items[+b.dataset.chk]; it.checked = !it.checked; render(ctx); });
+    ctx.$$('[data-mode] button').forEach(b => b.onclick = () => { const it = items[+b.parentElement.dataset.mode]; it.link = b.dataset.v === 'link'; it.checked = true; render(ctx); });
+    ctx.$$('[data-name]').forEach(inp => inp.oninput = () => { items[+inp.dataset.name].name = inp.value; });
+    ctx.$$('[data-cat]').forEach(s => s.onchange = () => { items[+s.dataset.cat].categoryId = s.value; });
+    ctx.$$('[data-spot]').forEach(s => s.onchange = () => { items[+s.dataset.spot].spotId = s.value; });
+    ctx.$$('[data-ph]').forEach(b => b.onclick = () => { const it = items[+b.dataset.ph]; if (it.photo) openPhotoViewer(it.photo); });
+    ctx.$$('[data-unbind]').forEach(b => b.onclick = () => { items[+b.dataset.unbind].barcode = null; render(ctx); });
+    ctx.$$('[data-scan]').forEach(b => b.onclick = () => {
+      const i = +b.dataset.scan;
+      openScanner({
+        capture: code => {
+          const owner = prodByBarcode(code);
+          if (owner) return toast(`這個條碼已經屬於「${owner.name}」`);
+          items.forEach((x, j) => { if (j !== i && x.barcode === code) x.barcode = null; });
+          items[i].barcode = code;
+          const k = extraCodes.indexOf(code); if (k >= 0) extraCodes.splice(k, 1);
+          render(ctx);
+        },
+      });
+    });
+    ctx.$('[data-cancel]').onclick = () => closeTop();
+    ctx.$('[data-create]').onclick = async () => {
+      const chosen = items.filter(i => i.checked);
+      if (chosen.some(i => !i.name.trim())) return toast('有商品沒有名稱');
+      for (const it of chosen) if (it.barcode && prodByBarcode(it.barcode)) return toast(`條碼 ${it.barcode} 已經屬於其他商品`);
+      const made = [];
+      for (const it of chosen) {
+        if (it.link && it.dup) {
+          const t = prodById(it.dup.id); if (!t) continue;
+          if (it.barcode && !(t.barcodes || []).includes(it.barcode)) t.barcodes = [...(t.barcodes || []), it.barcode];
+          if (it.photo) { await Photos.put(it.photo.id, it.photo.full); t.photos = [...(t.photos || []), { id: it.photo.id, thumb: it.photo.thumb }]; if (!t.mainPhoto) t.mainPhoto = it.photo.id; }
+          made.push(t); continue;
+        }
+        const p = {
+          id: uid(), name: it.name.trim(), barcodes: it.barcode ? [it.barcode] : [], categoryId: it.categoryId, spotId: it.spotId || '',
+          baseUnit: '個', packs: [], inUnit: '個', outUnit: '個', low: null, lowUnit: '個', planId: null, alerts: { exp: null, low: null, forecast: null },
+          createdAt: Date.now() + made.length, photos: [], mainPhoto: null,
+        };
+        if (it.photo) { await Photos.put(it.photo.id, it.photo.full); p.photos = [{ id: it.photo.id, thumb: it.photo.thumb }]; p.mainPhoto = it.photo.id; }
+        S.products.push(p); made.push(p);
+      }
+      commit();
+      await closeTop();
+      openCreatedList(made);
+    };
+  };
+  sheet({ title: '', full: true, onMount: render });
+}
+function openCreatedList(made) {
+  const render = ctx => {
+    ctx.setBody(`<div class="banner info">${ic('check')}<div class="small">已處理 ${made.length} 項商品。要入庫的話點下方商品，數量和到期日在入庫時填寫；單位或包裝換算可以在商品頁「編輯商品」調整。</div></div>
+      <div class="list">${made.map(p => prodById(p.id)).filter(Boolean).map(p => `<div class="item tap" data-in="${p.id}">${thumbHTML(p)}<div class="main"><div class="name">${esc(p.name)}</div><div class="meta">${esc(catById(p.categoryId)?.name || '')}・${(p.barcodes || []).length ? '已綁條碼' : '未綁條碼'}</div></div><button class="btn sm">${ic('in')}入庫</button></div>`).join('')}</div>`);
+    ctx.$$('[data-in]').forEach(el => el.onclick = () => openStockIn(el.dataset.in));
+  };
+  sheet({ title: '建立完成', full: true, onMount: render, refresh: render });
+}
+
+/* =========================================================
+   Stocktake
+   ========================================================= */
+function stocktakeDueAreas() {
+  const days = S.settings.stocktakeDays;
+  if (!days) return [];
+  const base = S.settings.stocktakeStart || Date.now();
+  return S.areas.filter(a => S.products.some(p => a.spots.some(s => s.id === p.spotId)))
+    .filter(a => Date.now() - (a.checkedAt || base) > days * 86400000);
+}
+function adjustTo(p, newBase) {
+  newBase = round(Math.max(0, newBase));
+  const cur = stockOf(p);
+  const diff = round(newBase - cur);
+  if (!diff) return 0;
+  if (diff < 0) {
+    let left = -diff;
+    for (const b of batchesOf(p)) { if (left <= 0) break; const take = Math.min(b.qty, left); b.qty = round(b.qty - take); left = round(left - take); }
+    S.batches = S.batches.filter(b => b.qty > 0);
+  } else {
+    S.batches.push({ id: uid(), productId: p.id, qty: diff, expiry: null, addedAt: Date.now() });
+  }
+  S.logs.push({ id: uid(), productId: p.id, type: 'adjust', qty: diff, at: Date.now(), note: 'stocktake' });
+  return diff;
+}
+
+function openStocktake() {
+  const render = ctx => {
+    const due = new Set(stocktakeDueAreas().map(a => a.id));
+    const groups = S.areas.map(a => ({ a, n: S.products.filter(p => a.spots.some(s => s.id === p.spotId)).length }));
+    const none = S.products.filter(p => !spotInfo(p.spotId)).length;
+    ctx.setBody(`<div class="hint" style="margin:0 2px 10px">選一個區域開始，逐項確認實際數量。可以只盤一個區域，下次再盤別的。盤點時的修正不會算進消耗統計。</div>
+      <div class="list">${groups.map(({ a, n }) => `<button class="setting-row" data-area="${a.id}" ${n ? '' : 'disabled style="opacity:.5"'}>${ic('pin', 'lead')}<span class="grow"><div style="font-weight:600">${esc(a.name)} <span class="muted small">${n} 項</span></div>
+        <div class="small muted">${a.checkedAt ? `上次盤點 ${fmtDate(toISO(new Date(a.checkedAt)))}` : '還沒盤點過'}</div></span>${due.has(a.id) ? '<span class="chip warn">該盤點了</span>' : ''}${ic('chev', 'chev')}</button>`).join('')}
+      ${none ? `<button class="setting-row" data-area="_none">${ic('pin', 'lead')}<span class="grow"><div style="font-weight:600">未指定位置 <span class="muted small">${none} 項</span></div></span>${ic('chev', 'chev')}</button>` : ''}</div>
+      <div class="small muted" style="margin:10px 2px">每 ${S.settings.stocktakeDays} 天提醒一次，可以在「設定 → 預設值」調整。</div>`);
+    ctx.$$('[data-area]').forEach(b => b.onclick = () => openStocktakeArea(b.dataset.area));
+  };
+  sheet({ title: '盤點', full: true, onMount: render, refresh: render });
+}
+function openStocktakeArea(areaId) {
+  const area = S.areas.find(a => a.id === areaId);
+  const confirmed = new Set();
+  const render = ctx => {
+    const groups = area ? area.spots.map(s => ({ name: s.name, items: S.products.filter(p => p.spotId === s.id) })).filter(g => g.items.length)
+      : [{ name: '未指定位置', items: S.products.filter(p => !spotInfo(p.spotId)) }];
+    const all = groups.flatMap(g => g.items);
+    ctx.setTitle(`盤點：${area ? area.name : '未指定位置'}`);
+    ctx.setBody(`<div class="small muted" style="margin:0 2px 8px">已確認 ${[...confirmed].filter(id => all.some(p => p.id === id)).length} / ${all.length} 項。數量正確按 ✓，不對就按「修改」。</div>
+      ${groups.map(g => `<div class="list"><div class="sub-group-title">${esc(g.name)}</div>${g.items.map(p => `<div class="item ${confirmed.has(p.id) ? 'done-row' : ''}">
+        ${thumbHTML(p)}<div class="main"><div class="name">${esc(p.name)}</div><div class="meta">系統記錄 ${esc(stockOf(p) > 0 ? fmtQty(p, stockOf(p)) : '0 ' + p.baseUnit)}</div></div>
+        <button class="btn sm" data-fix="${p.id}">修改</button>
+        <button class="check ${confirmed.has(p.id) ? 'on' : ''}" data-ok="${p.id}" aria-label="數量正確">${ic('check')}</button></div>`).join('')}</div>`).join('')}`);
+    ctx.setFoot(`<button class="btn" data-scan>${ic('scan')}掃碼加入</button><button class="btn primary" data-done>完成此區</button>`);
+    ctx.$$('[data-ok]').forEach(b => b.onclick = () => { const id = b.dataset.ok; confirmed.has(id) ? confirmed.delete(id) : confirmed.add(id); render(ctx); });
+    ctx.$$('[data-fix]').forEach(b => b.onclick = () => stocktakeFix(prodById(b.dataset.fix), () => { confirmed.add(b.dataset.fix); }));
+    ctx.$('[data-scan]').onclick = () => openScanner({ mode: 'in' });
+    ctx.$('[data-done]').onclick = async () => {
+      const left = all.filter(p => !confirmed.has(p.id)).length;
+      if (left && !await confirmDialog(`還有 ${left} 項沒有確認，仍要完成這一區嗎？沒確認的會維持原本的數量。`, { ok: '完成' })) return;
+      if (area) area.checkedAt = Date.now();
+      S.settings.lastStocktakeAt = Date.now();
+      commit(); await closeTop(); toast('這一區盤點完成');
+    };
+  };
+  sheet({ title: '', full: true, onMount: render, refresh: render });
+}
+function stocktakeFix(p, onDone) {
+  const units = unitsOf(p);
+  const u0 = p.outUnit || p.baseUnit;
+  const cur = stockOf(p);
+  const startVal = round(cur / factorOf(p, u0));
+  sheet({
+    title: `實際數量：${p.name}`,
+    body: `<div class="field"><label>實際數到的數量</label>${stepperHTML(startVal, units, u0)}<div class="hint">系統記錄 ${esc(fmtQty(p, cur))}。減少時會先從最早到期的批次扣除；增加的部分會記成沒有到期日的新批次，可以之後在商品頁修改。</div></div>`,
+    foot: `<button class="btn" data-no>取消</button><button class="btn primary" data-yes>儲存</button>`,
+    onMount: ctx => {
+      bindStepper(ctx);
+      ctx.$('[data-dec]').onclick = () => { const q = ctx.$('[data-qty]'); q.value = Math.max(0, round((+q.value || 0) - 1)); };
+      ctx.$('[data-no]').onclick = () => closeTop();
+      ctx.$('[data-yes]').onclick = async () => {
+        const q = +ctx.$('[data-qty]').value;
+        if (!(q >= 0)) return toast('數量不正確');
+        const unit = ctx.$('[data-unit]')?.value || p.baseUnit;
+        snapshot();
+        adjustTo(p, q * factorOf(p, unit));
+        onDone && onDone();
+        commit(); await closeTop();
+        toast(`${p.name} 已修正為 ${fmtQty(p, stockOf(p)) || 0}`, { label: '復原', fn: undo });
+      };
+    },
+  });
+}
+
+/* =========================================================
+   Changelog
+   ========================================================= */
+function openChangelog(justUpdated = false) {
+  sheet({
+    title: justUpdated ? `已更新到 v${APP_VERSION}` : '更新內容',
+    body: CHANGELOG.map(c => `<div class="section-title" style="margin-top:${c === CHANGELOG[0] ? 4 : 18}px"><span>v${c.v}</span><span class="count">${c.date}</span></div>
+      <div class="card"><ul class="cl">${c.items.map(i => `<li>${esc(i)}</li>`).join('')}</ul></div>`).join(''),
+    foot: `<button class="btn primary block" data-ok>${justUpdated ? '知道了' : '關閉'}</button>`,
+    onMount: ctx => { ctx.$('[data-ok]').onclick = () => closeTop(); },
+    onClose: () => { if (S.settings.seenVersion !== APP_VERSION) { S.settings.seenVersion = APP_VERSION; save(); } },
+  });
+}
+
+/* =========================================================
+   Backup (with photos)
+   ========================================================= */
+async function buildBackup(pw) {
+  const payload = JSON.stringify({ state: S, photos: await Photos.all() });
+  const head = { app: 'home-pantry', format: 2, version: APP_VERSION, exportedAt: new Date().toISOString() };
+  if (!pw) return `{"app":"home-pantry","format":2,"version":${JSON.stringify(APP_VERSION)},"exportedAt":${JSON.stringify(head.exportedAt)},"encrypted":false,"data":${payload}}`;
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(pw, salt);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(payload)));
+  return JSON.stringify({ ...head, encrypted: true, salt: b64.enc(salt), iv: b64.enc(iv), data: b64.enc(ct) });
+}
+function verNewer(a, b) { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; }
+async function readBackup(text, askPw) {
+  let obj; try { obj = JSON.parse(text); } catch (e) { throw new Error('這不是有效的備份檔'); }
+  if (obj.app !== 'home-pantry') throw new Error('這不是家庭庫存的備份檔');
+  let data = obj.data;
+  if (obj.encrypted) {
+    const pw = await askPw(); if (pw == null) throw new Error('cancel');
+    try {
+      const key = await deriveKey(pw, b64.dec(obj.salt));
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64.dec(obj.iv) }, key, b64.dec(obj.data));
+      data = JSON.parse(new TextDecoder().decode(pt));
+    } catch (e) { throw new Error('密碼錯誤，無法解開備份'); }
+  }
+  const out = (obj.format || 1) >= 2 ? { state: data.state, photos: data.photos || {} } : { state: data, photos: {} };
+  out.version = obj.version || '1.0.0';
+  out.newer = verNewer(out.version, APP_VERSION);
+  return out;
+}
+
 boot();
 
 </script>
