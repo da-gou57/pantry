@@ -1,0 +1,16 @@
+{
+  "name": "家庭庫存",
+  "short_name": "家庭庫存",
+  "description": "掃碼管理家中耗材：入出庫、到期提醒、購物清單。資料只存在你的手機。",
+  "lang": "zh-Hant-TW",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f1ea",
+  "theme_color": "#2f6b4f",
+  "icons": [
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
